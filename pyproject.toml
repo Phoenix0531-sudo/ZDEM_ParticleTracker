@@ -1,0 +1,20 @@
+[project]
+name = "zdem_particle_tracker"
+version = "1.0.0"
+description = "ZDEM Particle Tracker - 2D particle tracking application"
+requires-python = ">=3.11"
+dependencies = [
+    "PySide6>=6.6",
+    "numpy>=1.24",
+    "pyqtgraph>=0.13",
+    "scipy>=1.11",
+    "matplotlib>=3.8",
+    "scienceplots>=2.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["zdem_particle_tracker*"]
