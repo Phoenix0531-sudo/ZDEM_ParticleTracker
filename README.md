@@ -5,6 +5,7 @@
 [English](README.md) | [中文](README.zh-CN.md)
 
 ![CI](https://github.com/Phoenix0531-sudo/ZDEM_ParticleTracker/actions/workflows/ci.yml/badge.svg)
+![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 
 二维 ZDEM 离散元实验结果查看与单颗粒轨迹追踪工具（Windows / Python）。
 
@@ -125,3 +126,7 @@ uv run python -m unittest discover -s tests -v
 ## 许可与作者
 
 科研用途。ECUT 盐构造 / ZDEM 工作流配套工具。
+
+## License
+
+[MIT](LICENSE) — free for commercial use with attribution.
