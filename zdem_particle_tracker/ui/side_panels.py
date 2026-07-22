@@ -80,6 +80,7 @@ class PlaybackBar:
     traj_progress: QProgressBar
     btn_cancel_traj: QPushButton
     prog_layout: QHBoxLayout
+    prog_host: QWidget
 
 
 def _spin_region() -> QDoubleSpinBox:
@@ -436,4 +437,5 @@ def build_playback_bar(
         traj_progress=traj_progress,
         btn_cancel_traj=btn_cancel_traj,
         prog_layout=prog_row,
+        prog_host=prog_host,
     )

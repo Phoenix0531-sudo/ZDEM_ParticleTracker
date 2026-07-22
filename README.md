@@ -149,16 +149,50 @@ uv run python scripts/self_diag.py
 ## 测试
 
 ```bash
-# 默认快速套件（约 88 用例）
+# 默认快速套件（含 MainViewer 构造 + CPU 像素 + 有 GL 时 VisPy 截图）
 uv run python -m unittest discover -s tests -t .
 
-# 真实样本 + 窗口点选（约 1 分钟，需显示）
-set ZDEM_GUI_SAMPLE=1
-uv run python -m unittest tests.test_gui_smoke.TestGuiSmoke.test_load_sample_and_start_ids
+# 交互路径（无主窗业务逻辑）
+uv run python -m unittest tests.test_interaction_paths tests.test_viewer_logic
 
-# 离线自检（解析/轨迹/区域）
+# 渲染 / 主窗构造（默认会跑）
+uv run python -m unittest tests.test_render_pixels tests.test_gui_smoke
+
+# 无 OpenGL 的 CI / 远端：强制 PyQtGraph + offscreen
+set QT_QPA_PLATFORM=offscreen
+set ZDEM_FORCE_PYQTGRAPH=1
+uv run python -m unittest tests.test_gui_smoke tests.test_render_pixels
+
+# 真实样本 + 选中清除（约 1 分钟）
+set ZDEM_GUI_SAMPLE=1
+uv run python -m unittest tests.test_render_pixels.TestMainViewerConstruct.test_load_sample_select_clear
+
+# 离线自检
 uv run python scripts/self_diag.py
 ```
+
+环境变量：
+
+| 变量 | 作用 |
+|------|------|
+| `ZDEM_FORCE_PYQTGRAPH=1` | 禁用 VisPy，主窗用 PyQtGraph（headless 安全） |
+| `ZDEM_FORCE_VISPY=1` | 在 offscreen 上仍尝试 VisPy |
+| `QT_QPA_PLATFORM=offscreen` | 默认自动改走 PyQtGraph（无 GL） |
+| `ZDEM_GUI_SAMPLE=1` | 加载真实实验目录做点选 smoke |
+| `ZDEM_LOG_LEVEL=DEBUG` | 详细文件日志 |
+| `ZDEM_LOG_CONSOLE=1` | 日志镜像到 stderr |
+
+模块拆分（便于维护与单测）：
+
+| 模块 | 职责 |
+|------|------|
+| `widgets/selection_logic.py` | 选中门闸 / KD 拾取 / 路径裁剪 / 播放帧索引 |
+| `widgets/viewer_logic.py` | 曲线序列 / 表行 / 区域校验 / ID 解析 / 配置着色 |
+| `ui/side_panels.py` | 左栏/右栏/播放条 Qt 工厂（无业务逻辑） |
+| `rendering/backend.py` | VisPy / PyQtGraph 选择 |
+| `rendering/cpu_raster.py` | 无 GL 的圆盘像素真值 |
+| `rendering/vispy_renderer.py` | VisPy Mesh + `render_to_array` |
+| `widgets/main_viewer.py` | 编排：加载帧、渲染、信号连接 |
 
 ## Tests
 

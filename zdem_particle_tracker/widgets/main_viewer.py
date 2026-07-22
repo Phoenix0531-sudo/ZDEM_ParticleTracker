@@ -80,17 +80,38 @@ from .selection_logic import (
     play_parse_mode_name,
     validate_time_range_indices,
 )
+from .viewer_logic import (
+    TABLE_HEADERS,
+    color_mode_from_config,
+    color_mode_from_radio,
+    displacement_labels_from_point,
+    last_present_point,
+    parse_permanent_id_text,
+    particle_info_labels,
+    series_from_trajectory,
+    table_rows_from_trajectory,
+    traj_done_status_message,
+    trajectory_status_counts,
+    validate_region_bounds,
+)
+from ..ui.side_panels import build_left_panel, build_playback_bar, build_right_panel
 
 log = get_logger("main_viewer")
 
-# VisPy GPU renderer (auto-detect — may fail in headless mode)
-HAVE_VISPY = False
-try:
-    from ..rendering.vispy_renderer import VisPyRenderer
+# VisPy GPU renderer — skip on offscreen / ZDEM_FORCE_PYQTGRAPH=1
+from ..rendering.backend import prefer_vispy, try_import_vispy_renderer
 
-    HAVE_VISPY = True
-except Exception:
-    pass
+_VisPyCls = try_import_vispy_renderer()
+HAVE_VISPY = _VisPyCls is not None
+if HAVE_VISPY:
+    VisPyRenderer = _VisPyCls  # type: ignore[misc, assignment]
+else:
+    VisPyRenderer = None  # type: ignore[misc, assignment]
+    if prefer_vispy():
+        # import failed for other reasons
+        log.debug("VisPy unavailable; using PyQtGraph scatter fallback")
+    else:
+        log.debug("VisPy disabled for this platform/env; using PyQtGraph")
 
 
 class MainViewer(QMainWindow):
@@ -154,159 +175,46 @@ class MainViewer(QMainWindow):
         sp = QSplitter(Qt.Horizontal)
         ml.addWidget(sp)
 
-        # Left
-        left = QWidget()
-        ll = QVBoxLayout(left)
-        ll.setContentsMargins(8, 8, 8, 8)
-        ll.setSpacing(8)
+        left = build_left_panel(
+            self,
+            default_dir=DEFAULT_DIR,
+            on_browse=self._browse,
+            on_scan=self._scan_dir,
+            on_apply_range=self._apply_time_range,
+            on_color_mode=self._on_color_mode_changed,
+            on_scale=lambda *_: self._render(),
+            on_render=self._render,
+            on_apply_region=self._apply_user_region,
+            on_redetect=self._redetect_region,
+            on_fit_region=self._fit_region,
+            on_fit_particles=self._fit_particles,
+            on_quality=self._show_quality_report,
+            on_group_visibility=self._on_group_visibility,
+            on_isolate_group=self._on_isolate_group,
+            on_show_all_groups=self._on_show_all_groups,
+            on_show_selected_group=self._on_show_selected_group,
+            on_group_color=self._on_group_color_changed,
+        )
+        self._wall_cb = left.wall_cb
+        self._rb_real = left.rb_real
+        self._rb_enh = left.rb_enh
+        self._rb_cm_color = left.rb_cm_color
+        self._rb_cm_group = left.rb_cm_group
+        self._rb_cm_solid = left.rb_cm_solid
+        self._dir_input = left.dir_input
+        self._file_info = left.file_info
+        self._cmb_start = left.cmb_start
+        self._cmb_end = left.cmb_end
+        self._sp_stride = left.sp_stride
+        self._lbl_ini_hint = left.lbl_ini_hint
+        self._legend = left.legend
+        self._sp_xmin = left.sp_xmin
+        self._sp_xmax = left.sp_xmax
+        self._sp_ymin = left.sp_ymin
+        self._sp_ymax = left.sp_ymax
+        self._lbl_region_src = left.lbl_region_src
+        sp.addWidget(left.widget)
 
-        self._wall_cb = QCheckBox("显示墙体")
-        self._wall_cb.setChecked(True)
-        self._wall_cb.toggled.connect(self._render)
-        ll.addWidget(self._wall_cb)
-
-        # Display scale
-        gb_disp = QGroupBox("显示比例")
-        dv = QHBoxLayout(gb_disp)
-        self._rb_group_scale = QButtonGroup(self)
-        self._rb_real = QRadioButton("真实比例")
-        self._rb_real.setChecked(True)
-        self._rb_enh = QRadioButton("增强可见性")
-        self._rb_group_scale.addButton(self._rb_real)
-        self._rb_group_scale.addButton(self._rb_enh)
-        self._rb_enh.toggled.connect(lambda: self._render())
-        self._rb_real.toggled.connect(lambda: self._render())
-        dv.addWidget(self._rb_real)
-        dv.addWidget(self._rb_enh)
-        ll.addWidget(gb_disp)
-
-        # Color mode
-        gb_cm = QGroupBox("着色模式")
-        cm_lay = QVBoxLayout(gb_cm)
-        self._color_mode_group = QButtonGroup(self)
-        self._rb_cm_color = QRadioButton("按 color#")
-        self._rb_cm_group = QRadioButton("按 Group")
-        self._rb_cm_solid = QRadioButton("单色")
-        self._rb_cm_color.setChecked(True)
-        for rb in (self._rb_cm_color, self._rb_cm_group, self._rb_cm_solid):
-            self._color_mode_group.addButton(rb)
-            cm_lay.addWidget(rb)
-            rb.toggled.connect(self._on_color_mode_changed)
-        ll.addWidget(gb_cm)
-
-        # Experiment directory
-        gb_dir = QGroupBox("实验目录")
-        dir_l = QVBoxLayout(gb_dir)
-        self._dir_input = QLineEdit(DEFAULT_DIR)
-        self._dir_input.setReadOnly(True)
-        dir_l.addWidget(self._dir_input)
-        btn_row = QHBoxLayout()
-        btn = QPushButton("浏览")
-        btn.clicked.connect(self._browse)
-        btn_row.addWidget(btn)
-        scan_btn = QPushButton("重新扫描")
-        scan_btn.setObjectName("secondary")
-        scan_btn.clicked.connect(self._scan_dir)
-        btn_row.addWidget(scan_btn)
-        dir_l.addLayout(btn_row)
-        self._file_info = QLabel("尚未打开实验")
-        self._file_info.setObjectName("secondary")
-        self._file_info.setWordWrap(True)
-        dir_l.addWidget(self._file_info)
-        ll.addWidget(gb_dir)
-
-        # Time range — default start = last leading _ini
-        gb_range = QGroupBox("时间范围")
-        fl_r = QFormLayout(gb_range)
-        fl_r.setContentsMargins(8, 12, 8, 8)
-        fl_r.setSpacing(6)
-        self._cmb_start = QComboBox()
-        self._cmb_start.setMinimumWidth(140)
-        self._cmb_end = QComboBox()
-        self._cmb_end.setMinimumWidth(140)
-        self._sp_stride = QSpinBox()
-        self._sp_stride.setRange(1, 999)
-        self._sp_stride.setValue(1)
-        self._sp_stride.setToolTip("每 N 个文件取 1 帧（1=全部）")
-        fl_r.addRow("起始", self._cmb_start)
-        fl_r.addRow("结束", self._cmb_end)
-        fl_r.addRow("间隔 N", self._sp_stride)
-        self._lbl_ini_hint = QLabel("默认起点：最后一个前导 _ini（沉积结束）")
-        self._lbl_ini_hint.setObjectName("secondary")
-        self._lbl_ini_hint.setWordWrap(True)
-        fl_r.addRow(self._lbl_ini_hint)
-        btn_apply_range = QPushButton("应用范围")
-        btn_apply_range.clicked.connect(self._apply_time_range)
-        fl_r.addRow(btn_apply_range)
-        ll.addWidget(gb_range)
-
-        # Group legend
-        self._legend = GroupLegendPanel()
-        self._legend.visibility_changed.connect(self._on_group_visibility)
-        self._legend.isolate_group.connect(self._on_isolate_group)
-        self._legend.show_all_groups.connect(self._on_show_all_groups)
-        self._legend.show_selected_group.connect(self._on_show_selected_group)
-        self._legend.color_changed.connect(self._on_group_color_changed)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self._legend)
-        scroll.setMinimumHeight(120)
-        scroll.setMaximumHeight(220)
-        scroll.setFrameShape(QFrame.NoFrame)
-        ll.addWidget(scroll)
-
-        # Region
-        gb_reg = QGroupBox("实验区域")
-        fl = QFormLayout(gb_reg)
-        fl.setContentsMargins(8, 12, 8, 8)
-        fl.setSpacing(6)
-        self._sp_xmin = QDoubleSpinBox()
-        self._sp_xmax = QDoubleSpinBox()
-        self._sp_ymin = QDoubleSpinBox()
-        self._sp_ymax = QDoubleSpinBox()
-        for spb in (self._sp_xmin, self._sp_xmax, self._sp_ymin, self._sp_ymax):
-            spb.setDecimals(1)
-            spb.setRange(-1e9, 1e9)
-            spb.setSingleStep(100.0)
-            spb.setKeyboardTracking(False)
-        fl.addRow("X 最小", self._sp_xmin)
-        fl.addRow("X 最大", self._sp_xmax)
-        fl.addRow("Y 最小", self._sp_ymin)
-        fl.addRow("Y 最大", self._sp_ymax)
-        self._lbl_region_src = QLabel("来源：—")
-        self._lbl_region_src.setObjectName("secondary")
-        fl.addRow(self._lbl_region_src)
-        reg_btns = QHBoxLayout()
-        btn_apply = QPushButton("应用区域")
-        btn_apply.clicked.connect(self._apply_user_region)
-        btn_redetect = QPushButton("重新检测")
-        btn_redetect.setObjectName("secondary")
-        btn_redetect.clicked.connect(self._redetect_region)
-        reg_btns.addWidget(btn_apply)
-        reg_btns.addWidget(btn_redetect)
-        fl.addRow(reg_btns)
-        ll.addWidget(gb_reg)
-
-        fit_row = QHBoxLayout()
-        btn2 = QPushButton("适配区域")
-        btn2.setObjectName("secondary")
-        btn2.clicked.connect(self._fit_region)
-        fit_row.addWidget(btn2)
-        btn3 = QPushButton("适配颗粒")
-        btn3.setObjectName("secondary")
-        btn3.clicked.connect(self._fit_particles)
-        fit_row.addWidget(btn3)
-        ll.addLayout(fit_row)
-        btn_q = QPushButton("数据质量报告")
-        btn_q.setObjectName("secondary")
-        btn_q.clicked.connect(self._show_quality_report)
-        ll.addWidget(btn_q)
-        ll.addStretch()
-        left.setMinimumWidth(260)
-        left.setMaximumWidth(340)
-        sp.addWidget(left)
-
-        # Center
         center = QWidget()
         cl = QVBoxLayout(center)
         cl.setContentsMargins(4, 4, 4, 4)
@@ -351,128 +259,45 @@ class MainViewer(QMainWindow):
         self._tabs.addTab(self._tbl, "轨迹数据表")
         cl.addWidget(self._tabs)
 
-        pb = QHBoxLayout()
-        self._play_buttons = []
-        for txt, slot, tip in [
-            ("⏮", self._first, "第一帧"),
-            ("◀", self._prev, "上一帧"),
-            ("▶/⏸", self._play, "播放 / 暂停"),
-            ("▶", self._next, "下一帧"),
-            ("⏭", self._last, "最后一帧"),
-        ]:
-            b = QPushButton(txt)
-            b.setToolTip(tip)
-            b.clicked.connect(slot)
-            pb.addWidget(b)
-            self._play_buttons.append(b)
-        self._btn_play = self._play_buttons[2]
-        self._slider = QSlider(Qt.Horizontal)
-        self._slider.valueChanged.connect(self._on_slider_changed)
-        pb.addWidget(self._slider)
-        self._step_label = QLabel("0/0")
-        pb.addWidget(self._step_label)
-        pb.addWidget(QLabel("播放间隔(ms):"))
-        self._spd = QComboBox()
-        self._spd.addItems(["100", "200", "500", "1000"])
-        self._spd.setCurrentIndex(1)
-        self._spd.setToolTip("自动播放时每帧间隔")
-        pb.addWidget(self._spd)
-        cl.addLayout(pb)
-
-        # Trajectory progress
-        prog_row = QHBoxLayout()
-        self._traj_progress = QProgressBar()
-        self._traj_progress.setVisible(False)
-        self._traj_progress.setRange(0, 100)
-        self._btn_cancel_traj = QPushButton("取消追踪")
-        self._btn_cancel_traj.setObjectName("danger")
-        self._btn_cancel_traj.setVisible(False)
-        self._btn_cancel_traj.clicked.connect(self._cancel_trajectory)
-        prog_row.addWidget(self._traj_progress, 1)
-        prog_row.addWidget(self._btn_cancel_traj)
-        cl.addLayout(prog_row)
-
+        pb = build_playback_bar(
+            center,
+            on_first=self._first,
+            on_prev=self._prev,
+            on_play=self._play,
+            on_next=self._next,
+            on_last=self._last,
+            on_slider=self._on_slider_changed,
+            on_cancel_traj=self._cancel_trajectory,
+        )
+        self._play_buttons = pb.play_buttons
+        self._btn_play = pb.btn_play
+        self._slider = pb.slider
+        self._step_label = pb.step_label
+        self._spd = pb.spd
+        self._traj_progress = pb.traj_progress
+        self._btn_cancel_traj = pb.btn_cancel_traj
+        cl.addWidget(pb.widget)
+        cl.addWidget(pb.prog_host)
         sp.addWidget(center)
         sp.setStretchFactor(1, 1)
 
-        # Right
-        right = QWidget()
-        rl = QVBoxLayout(right)
-        rl.setContentsMargins(8, 8, 8, 8)
-        rl.setSpacing(8)
-        gb1 = QGroupBox("颗粒追踪")
-        g1l = QVBoxLayout(gb1)
-        hl = QHBoxLayout()
-        hl.addWidget(QLabel("永久 ID:"))
-        self._id_input = QLineEdit()
-        self._id_input.setPlaceholderText("输入永久颗粒 ID…")
-        self._id_input.setToolTip("追踪唯一依据：永久 id，不是文件 index")
-        self._id_input.returnPressed.connect(self._on_track)
-        hl.addWidget(self._id_input)
-        g1l.addLayout(hl)
-        self._btn_track = QPushButton("追踪")
-        self._btn_track.setToolTip("对选中永久 ID 重新提取轨迹（点击选择后会自动追踪）")
-        self._btn_track.clicked.connect(self._on_track)
-        g1l.addWidget(self._btn_track)
-        hint_sel = QLabel("仅可选择会话起始帧中存在的颗粒；选中后自动追踪")
-        hint_sel.setObjectName("secondary")
-        hint_sel.setWordWrap(True)
-        hint_sel.setStyleSheet("color:#86868b;font-size:11px;")
-        g1l.addWidget(hint_sel)
-        row_sel = QHBoxLayout()
-        self._btn_locate = QPushButton("定位")
-        self._btn_locate.setObjectName("secondary")
-        self._btn_locate.setToolTip("把视图中心移到当前选中颗粒")
-        self._btn_locate.clicked.connect(self._locate_selected)
-        self._btn_clear_sel = QPushButton("清除选择")
-        self._btn_clear_sel.setObjectName("secondary")
-        self._btn_clear_sel.clicked.connect(self._clear_selection)
-        row_sel.addWidget(self._btn_locate)
-        row_sel.addWidget(self._btn_clear_sel)
-        g1l.addLayout(row_sel)
-        self._btn_traj_path = QPushButton("显示路径")
-        self._btn_traj_path.setCheckable(True)
-        self._btn_traj_path.setToolTip("在颗粒视图中叠加已提取轨迹")
-        self._btn_traj_path.toggled.connect(self._toggle_traj_path)
-        g1l.addWidget(self._btn_traj_path)
-        self._cb_path_to_current = QCheckBox("路径截止当前帧")
-        self._cb_path_to_current.setChecked(True)
-        self._cb_path_to_current.setToolTip("勾选：只画到当前时间步；取消：画完整选定范围")
-        self._cb_path_to_current.toggled.connect(self._on_path_range_toggled)
-        g1l.addWidget(self._cb_path_to_current)
-        rl.addWidget(gb1)
-
-        gb2 = QGroupBox("颗粒信息")
-        self._info = QVBoxLayout(gb2)
-        self._info.setSpacing(4)
-        self._lbls = {}
-        for k in ["ID:", "序号:", "Group:", "X:", "Y:", "半径:", "状态:"]:
-            h = QHBoxLayout()
-            h.addWidget(QLabel(k, styleSheet="color:#666;min-width:50px"))
-            lbl = QLabel("—")
-            h.addWidget(lbl)
-            h.addStretch()
-            self._info.addLayout(h)
-            self._lbls[k] = lbl
-        rl.addWidget(gb2)
-
-        gb3 = QGroupBox("位移 / 速度")
-        dl = QVBoxLayout(gb3)
-        dl.setSpacing(4)
-        self._dlbls = {}
-        for k in ["ΔX:", "ΔY:", "总位移:", "路径长:", "Vx:", "Vy:", "|v|:", "Δstep:"]:
-            h = QHBoxLayout()
-            h.addWidget(QLabel(k, styleSheet="color:#666;min-width:50px"))
-            lbl = QLabel("—")
-            h.addWidget(lbl)
-            h.addStretch()
-            dl.addLayout(h)
-            self._dlbls[k] = lbl
-        rl.addWidget(gb3)
-        rl.addStretch()
-        right.setMinimumWidth(220)
-        right.setMaximumWidth(320)
-        sp.addWidget(right)
+        right = build_right_panel(
+            self,
+            on_track=self._on_track,
+            on_locate=self._locate_selected,
+            on_clear=self._clear_selection,
+            on_path_toggle=self._toggle_traj_path,
+            on_path_range=self._on_path_range_toggled,
+        )
+        self._id_input = right.id_input
+        self._btn_track = right.btn_track
+        self._btn_locate = right.btn_locate
+        self._btn_clear_sel = right.btn_clear_sel
+        self._btn_traj_path = right.btn_traj_path
+        self._cb_path_to_current = right.cb_path_to_current
+        self._lbls = right.lbls
+        self._dlbls = right.dlbls
+        sp.addWidget(right.widget)
         sp.setSizes([280, 700, 250])
 
         self._sb = self.statusBar()
@@ -753,12 +578,12 @@ class MainViewer(QMainWindow):
         self.load_directory(self._dir_input.text())
 
     def _on_color_mode_changed(self, *_args):
-        if self._rb_cm_group.isChecked():
-            self._color_mode = "group"
-        elif self._rb_cm_solid.isChecked():
-            self._color_mode = "solid"
-        else:
-            self._color_mode = "color_number"
+        self._color_mode = color_mode_from_radio(
+            group_checked=self._rb_cm_group.isChecked(),
+            solid_checked=self._rb_cm_solid.isChecked(),
+            color_checked=self._rb_cm_color.isChecked(),
+        )
+        log.debug("color_mode -> %s", self._color_mode)
         self._render()
 
     def _on_path_range_toggled(self, checked: bool):
@@ -980,8 +805,9 @@ class MainViewer(QMainWindow):
     ):
         xmin, xmax = float(xmin), float(xmax)
         ymin, ymax = float(ymin), float(ymax)
-        if xmax <= xmin or ymax <= ymin:
-            QMessageBox.warning(self, "区域无效", "要求 Xmax > Xmin 且 Ymax > Ymin")
+        err = validate_region_bounds(xmin, xmax, ymin, ymax)
+        if err:
+            QMessageBox.warning(self, "区域无效", err)
             return False
         self._experiment_region = (xmin, xmax, ymin, ymax, str(source))
         self._region_user_locked = bool(user_locked)
@@ -1368,20 +1194,31 @@ class MainViewer(QMainWindow):
         d = self._current_data
         pid = self._selected_id
         if d is None or pid is None:
+            for k, v in particle_info_labels(pid=None).items():
+                if k in self._lbls:
+                    self._lbls[k].setText(v)
             return
         mask = d.ids == pid
         if not mask.any():
-            self._lbls["状态:"].setText("本帧不存在")
+            labels = particle_info_labels(pid=pid, status="本帧不存在")
+            for k, v in labels.items():
+                if k in self._lbls:
+                    self._lbls[k].setText(v)
             return
         i = int(mask.argmax())
-        self._lbls["ID:"].setText(str(pid))
-        self._lbls["序号:"].setText(str(int(d.indices[i])))
         g = str(d.groups[i]) if len(d.groups) > i else "***"
-        self._lbls["Group:"].setText("未指定（***）" if g == "***" else g)
-        self._lbls["X:"].setText(f"{d.xs[i]:.2f}")
-        self._lbls["Y:"].setText(f"{d.ys[i]:.2f}")
-        self._lbls["半径:"].setText(f"{d.rads[i]:.1f}")
-        self._lbls["状态:"].setText("正常")
+        labels = particle_info_labels(
+            pid=pid,
+            file_index=int(d.indices[i]),
+            group=g,
+            x=float(d.xs[i]),
+            y=float(d.ys[i]),
+            rad=float(d.rads[i]),
+            status="正常",
+        )
+        for k, v in labels.items():
+            if k in self._lbls:
+                self._lbls[k].setText(v)
         # If trajectory exists, refresh displacement panel for current step
         if self._trajectory:
             for p in self._trajectory:
@@ -1389,14 +1226,9 @@ class MainViewer(QMainWindow):
                     "normal",
                     "present",
                 ):
-                    self._dlbls["ΔX:"].setText(f"{p.displacement_x_km:.2f}")
-                    self._dlbls["ΔY:"].setText(f"{p.displacement_y_km:.2f}")
-                    self._dlbls["总位移:"].setText(f"{p.displacement_total_km:.2f}")
-                    self._dlbls["路径长:"].setText(f"{p.path_length_km:.2f}")
-                    self._dlbls["Vx:"].setText(f"{p.velocity_x:.6g} /step")
-                    self._dlbls["Vy:"].setText(f"{p.velocity_y:.6g} /step")
-                    self._dlbls["|v|:"].setText(f"{p.velocity_total:.6g} /step")
-                    self._dlbls["Δstep:"].setText(f"{p.delta_step:.0f}")
+                    for kk, vv in displacement_labels_from_point(p).items():
+                        if kk in self._dlbls:
+                            self._dlbls[kk].setText(vv)
                     break
 
     # ── Trajectory ──────────────────────────────────────────────────
@@ -1407,14 +1239,9 @@ class MainViewer(QMainWindow):
         if self._traj_service.is_running:
             QMessageBox.information(self, "提示", "轨迹正在提取，请先取消或等待完成")
             return
-        txt = self._id_input.text().strip()
-        if not txt:
-            QMessageBox.warning(self, "提示", "请输入永久颗粒 ID")
-            return
-        try:
-            pid = int(txt)
-        except ValueError:
-            QMessageBox.warning(self, "提示", "请输入整数永久 ID（不是 index）")
+        pid, err = parse_permanent_id_text(self._id_input.text())
+        if err:
+            QMessageBox.warning(self, "提示", err)
             return
         if self._start_frame_ids is None:
             QMessageBox.information(self, "请稍候", "起始帧尚未就绪")
@@ -1499,34 +1326,18 @@ class MainViewer(QMainWindow):
             self._set_controls_enabled(bool(self._frame_files))
             return
         self._trajectory = traj
-        n_ok = sum(1 for p in (traj or []) if p.status in ("normal", "present"))
-        n_er = sum(1 for p in (traj or []) if p.status == "eroded")
-        n_fe = sum(1 for p in (traj or []) if p.status == "file_error")
-        msg = f"轨迹提取完成: {len(traj)} 帧（有效 {n_ok}"
-        if n_er:
-            msg += f"，剥蚀 {n_er}"
-        if n_fe:
-            msg += f"，文件错误 {n_fe}"
-        msg += "）"
+        counts = trajectory_status_counts(traj)
+        n_ok = counts["ok"]
+        msg = traj_done_status_message(counts)
         log.info("traj_done %s", msg)
         self._sb.showMessage(msg)
         self._sb_label.setText("轨迹完成")
         self._update_plots(traj)
         self._update_table(traj)
-        last = None
-        for p in reversed(traj or []):
-            if p.status in ("normal", "present"):
-                last = p
-                break
-        if last is not None:
-            self._dlbls["ΔX:"].setText(f"{last.displacement_x_km:.2f}")
-            self._dlbls["ΔY:"].setText(f"{last.displacement_y_km:.2f}")
-            self._dlbls["总位移:"].setText(f"{last.displacement_total_km:.2f}")
-            self._dlbls["路径长:"].setText(f"{last.path_length_km:.2f}")
-            self._dlbls["Vx:"].setText(f"{last.velocity_x:.6g} /step")
-            self._dlbls["Vy:"].setText(f"{last.velocity_y:.6g} /step")
-            self._dlbls["|v|:"].setText(f"{last.velocity_total:.6g} /step")
-            self._dlbls["Δstep:"].setText(f"{last.delta_step:.0f}")
+        last = last_present_point(traj)
+        for k, v in displacement_labels_from_point(last).items():
+            if k in self._dlbls:
+                self._dlbls[k].setText(v)
         # Auto-show path when trajectory ready
         if n_ok and hasattr(self, "_btn_traj_path"):
             self._btn_traj_path.blockSignals(True)
@@ -1561,74 +1372,28 @@ class MainViewer(QMainWindow):
         for pw in plots:
             if hasattr(pw, "clear"):
                 pw.clear()
-        if not traj:
+        series = series_from_trajectory(traj)
+        steps = series["steps"]
+        if not steps:
             return
-        pts = [
-            p
-            for p in traj
-            if p.status in ("normal", "present")
-            and not (isinstance(p.x_km, float) and np.isnan(p.x_km))
-        ]
-        if not pts:
-            return
-        steps = [p.time_step for p in pts]
-        self._style_curve(self._plot_dx, steps, [p.displacement_x_km for p in pts])
-        self._style_curve(self._plot_dy, steps, [p.displacement_y_km for p in pts])
-        self._style_curve(self._plot_dt, steps, [p.displacement_total_km for p in pts])
-        self._style_curve(self._plot_pl, steps, [p.path_length_km for p in pts])
-        self._style_curve(
-            self._plot_v, steps, [p.velocity_total for p in pts], color="#8B1A1A"
-        )
-        self._style_curve(
-            self._plot_vx, steps, [p.velocity_x for p in pts], color="#1a5f2a"
-        )
-        self._style_curve(
-            self._plot_vy, steps, [p.velocity_y for p in pts], color="#5b3a8c"
-        )
+        self._style_curve(self._plot_dx, steps, series["dx"])
+        self._style_curve(self._plot_dy, steps, series["dy"])
+        self._style_curve(self._plot_dt, steps, series["dt"])
+        self._style_curve(self._plot_pl, steps, series["pl"])
+        self._style_curve(self._plot_v, steps, series["v"], color="#8B1A1A")
+        self._style_curve(self._plot_vx, steps, series["vx"], color="#1a5f2a")
+        self._style_curve(self._plot_vy, steps, series["vy"], color="#5b3a8c")
 
     def _update_table(self, traj):
-        if not traj:
-            return
-        headers = [
-            "时间步",
-            "X",
-            "Y",
-            "ΔX",
-            "ΔY",
-            "总位移",
-            "Vx",
-            "Vy",
-            "|v|",
-            "Δstep",
-            "路径长度",
-            "状态",
-        ]
-        self._tbl.setColumnCount(len(headers))
-        self._tbl.setHorizontalHeaderLabels(headers)
-        self._tbl.setRowCount(len(traj))
-        for r, p in enumerate(traj):
-            def fmt(v, nd=2):
-                if v is None or (isinstance(v, float) and np.isnan(v)):
-                    return "—"
-                return f"{v:.{nd}f}" if nd is not None else f"{v:.6g}"
-
-            vals = [
-                p.time_step,
-                fmt(p.x_km, 1),
-                fmt(p.y_km, 1),
-                fmt(p.displacement_x_km, 2),
-                fmt(p.displacement_y_km, 2),
-                fmt(p.displacement_total_km, 2),
-                fmt(p.velocity_x, None),
-                fmt(p.velocity_y, None),
-                fmt(p.velocity_total, None),
-                f"{p.delta_step:.0f}" if p.delta_step else "0",
-                fmt(p.path_length_km, 2),
-                p.status,
-            ]
+        rows = table_rows_from_trajectory(traj)
+        self._tbl.setColumnCount(len(TABLE_HEADERS))
+        self._tbl.setHorizontalHeaderLabels(TABLE_HEADERS)
+        self._tbl.setRowCount(len(rows))
+        for r, vals in enumerate(rows):
             for c, v in enumerate(vals):
                 self._tbl.setItem(r, c, QTableWidgetItem(str(v)))
-        self._tbl.resizeColumnsToContents()
+        if rows:
+            self._tbl.resizeColumnsToContents()
 
     def _toggle_traj_path(self, checked):
         self._btn_traj_path.setText("隐藏路径" if checked else "显示路径")
@@ -1884,11 +1649,11 @@ class MainViewer(QMainWindow):
             self._rb_enh.setChecked(True)
         else:
             self._rb_real.setChecked(True)
-        mode = (cfg.color_mode or "color_number").lower()
-        if mode in ("group", "by_group"):
+        mode = color_mode_from_config(cfg.color_mode)
+        if mode == "group":
             self._rb_cm_group.setChecked(True)
             self._color_mode = "group"
-        elif mode in ("solid", "single"):
+        elif mode == "solid":
             self._rb_cm_solid.setChecked(True)
             self._color_mode = "solid"
         else:

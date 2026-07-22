@@ -417,6 +417,36 @@ class VisPyRenderer(QWidget):
     def render(self):
         self._canvas.update()
 
+    def render_to_array(self, alpha: bool = True) -> np.ndarray | None:
+        """Capture the current scene as (H, W, 3|4) uint8.
+
+        Returns None if OpenGL context is unavailable (e.g. Qt offscreen
+        without GL). Prefer this for automated pixel tests.
+        """
+        if self._canvas is None:
+            return None
+        try:
+            # Force a draw before readback
+            try:
+                self._canvas.update()
+            except Exception:
+                pass
+            img = self._canvas.render(alpha=alpha)
+            if img is None:
+                return None
+            arr = np.asarray(img)
+            if arr.ndim != 3 or arr.shape[2] < 3:
+                return None
+            if arr.dtype != np.uint8:
+                # vispy may return float 0–1
+                if arr.dtype.kind == "f" and arr.max() <= 1.0 + 1e-6:
+                    arr = np.clip(arr * 255.0, 0, 255).astype(np.uint8)
+                else:
+                    arr = np.clip(arr, 0, 255).astype(np.uint8)
+            return arr
+        except Exception:
+            return None
+
     def clear_all(self):
         self.clear_walls()
         self.clear_selection()
