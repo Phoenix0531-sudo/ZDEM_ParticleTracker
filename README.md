@@ -125,21 +125,39 @@ Legend: double-click isolates a group; right-click edits Group color (persisted 
 - Playback / prefetch: `BASIC_FRAME` (auto FULL when coloring by Group)
 - Tracks: streaming `find_particle_in_file` + thread pool
 
-## Logging
+## 日志
 
-Logs go to the user profile, **never** into experiment folders:
+写入用户目录，**不**写实验数据目录：
 
-`%LOCALAPPDATA%\ZDEM_ParticleTracker\logs\app.log`
+`%LOCALAPPDATA%\ZDEM_ParticleTracker\logs\app.log`（轮转，最大约 5×5MB）
 
-Env:
+环境变量：
 
-- `ZDEM_LOG_LEVEL=DEBUG|INFO|WARNING|ERROR`
-- `ZDEM_LOG_CONSOLE=1` — also mirror INFO to stderr
+| 变量 | 作用 |
+|------|------|
+| `ZDEM_LOG_LEVEL=DEBUG` | 文件日志级别（默认 INFO） |
+| `ZDEM_LOG_CONSOLE=1` | 同时把 INFO 打到 stderr |
 
-Offline probe (edit sample path inside the script if needed):
+覆盖：启动/退出、目录扫描、DAT 解析耗时、帧加载、区域检测、选中/拒绝 ID、轨迹开始/进度取消/完成、未捕获异常与 Qt 警告。
+
+自检脚本：
 
 ```bash
-python scripts/self_diag.py
+uv run python scripts/self_diag.py
+```
+
+## 测试
+
+```bash
+# 默认快速套件（约 88 用例）
+uv run python -m unittest discover -s tests -t .
+
+# 真实样本 + 窗口点选（约 1 分钟，需显示）
+set ZDEM_GUI_SAMPLE=1
+uv run python -m unittest tests.test_gui_smoke.TestGuiSmoke.test_load_sample_and_start_ids
+
+# 离线自检（解析/轨迹/区域）
+uv run python scripts/self_diag.py
 ```
 
 ## Tests

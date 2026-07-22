@@ -299,6 +299,13 @@ class TestRegionDetector(unittest.TestCase):
         self.assertAlmostEqual(reg.y_min, -5.0)
         self.assertAlmostEqual(reg.y_max, 65.0)  # bottom + height
 
+    def test_metadata_absolute_top_when_bottom_zero(self):
+        # ZDEM-style: bottom=0, height field is absolute top Y, comparable to X span
+        reg = self.det.detect_from_metadata({"left": 0, "right": 50000, "bottom": 0, "height": 50160})
+        self.assertEqual(reg.source, "metadata")
+        self.assertAlmostEqual(reg.y_min, 0.0)
+        self.assertAlmostEqual(reg.y_max, 50160.0)
+
     def test_no_metadata_fallback_unit(self):
         reg = self.det._fallback_region(None, "no-data")
         self.assertEqual(reg.source, "no-data")
