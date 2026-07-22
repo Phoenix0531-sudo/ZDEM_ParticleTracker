@@ -1,90 +1,76 @@
 # ZDEM Particle Tracker
 
-**面向 ZDEM 离散元结果的交互式二维颗粒追踪 — VisPy 真实半径 Mesh 圆盘、永久 ID、明确的区域策略。**
+**面向 ZDEM 离散元帧序列的交互式 2D 颗粒追踪 — VisPy 真实半径 mesh 圆盘、永久 ID、显式区域策略。**
 
 [English](README.md) | [中文](README.zh-CN.md)
 
 [![CI](https://github.com/Phoenix0531-sudo/ZDEM_ParticleTracker/actions/workflows/ci.yml/badge.svg)](https://github.com/Phoenix0531-sudo/ZDEM_ParticleTracker/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-%3E%3D3.11-blue.svg)](pyproject.toml)
 
-研究向桌面程序，服务 **ZDEM** 帧序列（`all_*.dat` / 沉积 `_ini` 帧）。不是通用多物理 GUI：数据路径、渲染器与区域规则都为盐构造 / 颗粒 DEM 后处理而设（Windows + Python）。
+研究用桌面端，服务 **ZDEM** 帧序列（`all_*.dat` / 沉积 `_ini`）。为盐构造 / 颗粒 DEM 后处理定见设计，不是通用多物理 GUI。
 
-## 预览
+## 截图 / 证据
 
-![ZDEM Particle Tracker](docs/screenshots/preview.png)
+<table>
+  <tr>
+    <td width="50%">
+      <img src="docs/screenshots/evidence.png" alt="服务层证据">
+      <br><strong>服务层证据</strong> — 真实半径圆盘、墙体区域、选中门控、v=Δx/Δstep
+    </td>
+    <td width="50%">
+      <img src="docs/screenshots/preview.png" alt="领域示意图">
+      <br><strong>领域示意图</strong> — 解析 → 区域 → mesh 渲染 → 轨迹
+    </td>
+  </tr>
+</table>
 
-## 为什么做
-
-| 痛点 | 本程序做法 |
-|------|------------|
-| GL 点精灵发胖、白晕、缩放空洞 | 默认 **真实空间 Mesh 圆盘**（`VisPyRenderer`），不是 `GL_POINTS` |
-| 点错后静默空图 | 点击路径写入 **永久颗粒 ID**；失败走日志 |
-| 相机只按颗粒 Y 包围盒裁切，墙/实验框消失 | **用户锁定 > 墙 > 元数据** |
-| 大帧序列卡死 UI | 异步帧加载、LRU 缓存、轨迹可取消 + 进度 |
-
-## 真实包结构
-
-```
-main.py → zdem_particle_tracker.app.main → MainViewer
-parsers/   dat_parser.py, dat_scan.py
-rendering/ vispy_renderer.py, cpu_raster.py, backend.py
-services/  region_detector.py, trajectory_service.py, ...
-widgets/   main_viewer.py, selection_logic.py, viewer_logic.py
-ui/        side_panels.py, group_legend_panel.py
-workers/   frame_load_worker.py
+```bash
+uv run python scripts/generate_evidence.py
 ```
 
-## 渲染要点（代码事实）
+证据图为**可复现的合成服务级场景**（诚实）：跑 `RegionDetector` / `pick_particle_id` / `_compute_kinematics`，不冒充专有实验 GUI 截图。
 
-`rendering/vispy_renderer.py`：
+## 为什么存在
 
-- 颗粒 = 圆盘网格（近景 16 分段，远景可降到 8）
-- 视口裁剪 + 颗粒过多时抽稀（`_MAX_DRAW_PARTICLES = 80000`）
-- Mesh 缓冲复用，利于拖动时间轴
-- 墙线段、选中标记、轨迹折线分层绘制
-- Windows 下 `create_native()`，避免错误的 `show=False/parent=self` 嵌入方式
+| 痛点 | 做法 |
+|------|------|
+| GL 点精灵放大小白边 / 空洞 | 默认 **mesh 圆盘**（`VisPyRenderer`） |
+| 点选失败静默空白 | **永久 ID** + 会话起始 ID 门控 |
+| 相机只裁颗粒 Y 包络藏墙 | **用户锁定 > 墙体 > 元数据** |
+| 大帧序列卡死 UI | 异步加载、LRU、可取消轨迹 |
 
-无界面 / CI 可走 CPU·pyqtgraph 路径（`ZDEM_FORCE_PYQTGRAPH=1`）。
+## 结构
 
-## 区域策略
+入口：`python main.py` → `MainViewer`。核心包见 `zdem_particle_tracker/{parsers,rendering,services,widgets,workers}`。
 
-`services/region_detector.py`：
+## 区域与运动学
 
-1. 墙数组 `(N,4)=[x1,y1,x2,y2]` → 端点包围盒；退化则回退
-2. 元数据 `left/right/bottom/height`
-3. UI **用户锁定** 四边界，防止临时“适配颗粒”变成永久实验域
+- `RegionDetector.detect_from_walls`：墙段端点 AABB
+- 速度定义：**`v = Δx / Δstep`**（模拟步），见 `_compute_kinematics`
+- 点击选取：`pick_particle_id(..., start_ids=)` 仅允许会话起始帧中出现过的永久 ID
 
-## 安装与运行
+## 安装 / 运行
 
 ```bash
 git clone https://github.com/Phoenix0531-sudo/ZDEM_ParticleTracker.git
 cd ZDEM_ParticleTracker
-pip install -r requirements.txt
+uv sync --extra dev
 python main.py
-```
-
-Python **>= 3.11**。依赖含 PySide6、numpy、pyqtgraph、scipy、matplotlib、scienceplots；Mesh 路径需要 VisPy。
-
-```bash
 set QT_QPA_PLATFORM=offscreen
 set ZDEM_FORCE_PYQTGRAPH=1
-pytest tests/
+uv run pytest -q tests
 ```
 
-Linux CI 对部分 Qt 构造使用 **独立子进程**（`tests/qt_subprocess.py`），避免后端混用导致整进程 abort。
+## 测试覆盖
 
-## 测试覆盖（节选）
-
-DAT 解析/扫描、selection/viewer 纯逻辑、轨迹取消、渲染像素、GUI 冒烟、性能路径等，见 `tests/test_*.py`。
-
-## 相关仓库
-
-ParticleTracker 负责**交互追踪**；盐构造几何指标、面积守恒、粘结损伤、模型编辑等见同系列 ZDEM 仓（Salt / Area / Bond Fracture / Model Editor 等）。
+DAT 解析、选中门控、区域检测、运动学、轨迹取消、渲染/交互路径等（见 `tests/` 文件名）。
 
 ## 范围
 
-- **做：** ZDEM 二维结果、ID 追踪、真半径显示、区域锁定、导出/报告钩子  
-- **不做：** 三维求解器 UI、云协作、本构自动反演  
+- **做：** ZDEM 2D 帧、ID 追踪、真实比例显示、区域锁定
+- **不做：** 3D 求解器 UI、云协作、本构自动反演
+- 专有实验全 GUI 截图不入库；公开证据用脚本 + 本地样例
 
 ## 许可证
 

@@ -6,48 +6,62 @@
 
 [![CI](https://github.com/Phoenix0531-sudo/ZDEM_ParticleTracker/actions/workflows/ci.yml/badge.svg)](https://github.com/Phoenix0531-sudo/ZDEM_ParticleTracker/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-%3E%3D3.11-blue.svg)](pyproject.toml)
 
-Research desktop app for **ZDEM** frame sequences (`all_*.dat` / deposition `_ini` frames). It is not a generic multi-physics GUI: the data path, renderer, and region rules are opinionated for salt-tectonics / granular DEM post-processing on Windows + Python.
+Research desktop app for **ZDEM** frame sequences (`all_*.dat` / deposition `_ini` frames). Opinionated for salt-tectonics / granular DEM post-processing on Windows + Python — not a generic multi-physics GUI.
 
-## Preview
+## Screenshots / evidence
 
-![ZDEM Particle Tracker](docs/screenshots/preview.png)
+<table>
+  <tr>
+    <td width="50%">
+      <img src="docs/screenshots/evidence.png" alt="Service-level evidence: discs, walls, kinematics">
+      <br><strong>Service evidence</strong> — true-radius discs, wall region, selection gate, v=Δx/Δstep
+    </td>
+    <td width="50%">
+      <img src="docs/screenshots/preview.png" alt="Domain schematic">
+      <br><strong>Domain schematic</strong> — parse → region → mesh render → trajectory
+    </td>
+  </tr>
+</table>
+
+```bash
+uv run python scripts/generate_evidence.py
+# example: picked permanent id under session gate; path_length from _compute_kinematics
+```
+
+Evidence figure is **synthetic service-level** (honest): it exercises `RegionDetector`, `pick_particle_id`, and `_compute_kinematics` without claiming a full lab GUI screenshot of proprietary campaign data.
 
 ## Why this exists
 
 | Pain | What this app does |
 |------|---------------------|
-| GL point sprites look “fat” or leave white halos / holes when zooming | Default renderer draws **mesh discs in real space** (`VisPyRenderer`), not `GL_POINTS` markers |
-| Silent empty plots after a bad click | Click path fills **permanent particle IDs** through selection logic; failures are logged |
-| Auto camera crop only on particle Y bbox hides walls / experiment box | `RegionDetector` + UI policy: **user lock > walls > metadata** |
-| Multi-GB frame sets freeze the UI | Frame load worker, LRU frame cache, trajectory cancel + progress |
+| GL point sprites look fat / leave white halos when zooming | Default renderer draws **mesh discs in real space** (`VisPyRenderer`), not `GL_POINTS` |
+| Silent empty plots after a bad click | Click path fills **permanent particle IDs**; gated by session-start ID set |
+| Auto camera crop on particle Y bbox hides walls / box | **User lock > walls > metadata** (`RegionDetector`) |
+| Multi-GB frame sets freeze the UI | Frame load worker, LRU cache, trajectory cancel + progress |
 
 ## Architecture (real packages)
 
 ```
 main.py
 zdem_particle_tracker/
-  app.py                 # QApplication, Fusion style, APP_STYLESHEET (Apple-ish UI)
-  config.py              # QSS
-  parsers/
-    dat_parser.py        # frame payload
-    dat_scan.py          # scan all_*.dat / _ini series
+  app.py                 # QApplication, Fusion style, APP_STYLESHEET
+  parsers/dat_parser.py  # frame payload + find_particle_in_file
+  parsers/dat_scan.py    # scan all_*.dat / _ini series
   rendering/
-    vispy_renderer.py    # GPU mesh discs, wall lines, selection, trajectory
-    cpu_raster.py        # fallback path
-    backend.py           # backend selection
+    vispy_renderer.py    # GPU mesh discs, walls, selection, trajectory
+    cpu_raster.py        # fallback
+    backend.py           # VisPy vs pyqtgraph selection
   services/
     region_detector.py   # walls → bbox; metadata fallback
-    trajectory_service.py
+    trajectory_service.py  # v = Δx/Δstep; cancelable worker
     export_service.py / quality_report.py / project_config.py
   widgets/
     main_viewer.py       # MainViewer entry
-    selection_logic.py / viewer_logic.py
-    series_plot.py
-  ui/side_panels.py      # group legend, controls
+    selection_logic.py   # pure pick / gate helpers
   workers/frame_load_worker.py
-  models/particle_data.py
-  utils/frame_cache.py, color_mapping.py, logging_utils.py
+  utils/frame_cache.py, color_mapping.py
 ```
 
 Entry: `python main.py` → `zdem_particle_tracker.app.main` → `MainViewer`.
@@ -57,75 +71,68 @@ Entry: `python main.py` → `zdem_particle_tracker.app.main` → `MainViewer`.
 From `rendering/vispy_renderer.py`:
 
 - Particles are **disc meshes** (`_DISC_SEGMENTS = 16`, reduced to 8 when far / dense)
-- Viewport culling + optional decimation when particle count is large (`_MAX_DRAW_PARTICLES = 80000`)
-- Mesh buffer reuse for frame scrubbing performance
-- Walls drawn as line sets; selection / origin markers and trajectory polyline are first-class layers
-- On Windows Qt, canvas uses `create_native()` **without** the broken `show=False/parent=self` pattern that mis-embeds VisPy
+- Viewport culling + optional decimation (`_MAX_DRAW_PARTICLES = 80000`)
+- Mesh buffer reuse for frame scrubbing
+- Walls as line sets; selection / trajectory are first-class layers
+- On Windows Qt, canvas uses `create_native()` without the broken `show=False/parent=self` embed pattern
 
-CPU / pyqtgraph path remains available for headless CI (`ZDEM_FORCE_PYQTGRAPH=1` in test docs/history).
+CPU / pyqtgraph path for headless CI (`ZDEM_FORCE_PYQTGRAPH=1`).
 
 ## Region policy
 
 `services/region_detector.py`:
 
-1. `detect_from_walls(walls)` — walls array `(N, 4)` as `[x1,y1,x2,y2]`; unique endpoints → axis-aligned bbox; collinear / empty → fallback
-2. `detect_from_metadata` — uses frame metadata `left` / `right` / `bottom` / `height`
-3. UI layer can **user-lock** four bounds so temporary “fit particles” zoom does not become permanent experiment region
+1. `detect_from_walls(walls)` — walls `(N,4)` as `[x1,y1,x2,y2]` → axis-aligned bbox; collinear / empty → fallback
+2. `detect_from_metadata` — `left` / `right` / `bottom` / `height` (delta vs absolute-top heuristic)
+3. UI **user-lock** so temporary “fit particles” zoom is not the permanent experiment region
 
-This matches the lab rule: **never treat particle Y-only bbox as the lasting experiment domain**.
+Lab rule: **never treat particle Y-only bbox as the lasting experiment domain**.
 
-## Tracking and performance
+## Tracking and kinematics
 
-- Trajectory service supports cancelable workers and progress (see `tests/test_trajectory_cancel.py`)
-- Frame loading is asynchronous (`workers/frame_load_worker.py`) with cache (`utils/frame_cache.py`)
-- Color modes include **color#** group coloring (group legend panel), not only single-color scatter
-- Project config can restore previously selected particle IDs after reload
+- Permanent particle ID across frames via `find_particle_in_file`
+- Velocity definition: **`v = Δx / Δstep`** (simulation step), not wall-clock seconds — see `_compute_kinematics`
+- Trajectory worker is cancelable with progress (`tests/test_trajectory_cancel.py`)
+- Color modes include **color#** group coloring
 
-## Install
+## Install / run
 
 ```bash
 git clone https://github.com/Phoenix0531-sudo/ZDEM_ParticleTracker.git
 cd ZDEM_ParticleTracker
-pip install -r requirements.txt
-# pyproject: PySide6, numpy, pyqtgraph, scipy, matplotlib, scienceplots
-# VisPy is required for the mesh path (install if missing in your env)
-```
-
-Python **>= 3.11**.
-
-## Run
-
-```bash
+uv sync --extra dev
+# or: pip install -r requirements.txt
 python main.py
-# or
-python -m zdem_particle_tracker
 ```
 
-Headless / CI-oriented:
+Python **>= 3.11**. Stack: PySide6, numpy, scipy, pyqtgraph, matplotlib, scienceplots; VisPy for mesh path.
+
+Headless / CI:
 
 ```bash
 set QT_QPA_PLATFORM=offscreen
 set ZDEM_FORCE_PYQTGRAPH=1
-pytest tests/
+uv run pytest -q tests
 ```
 
-Linux GitHub Actions constructs some Qt widgets in an **isolated subprocess** (`tests/qt_subprocess.py`) to avoid process-wide abort when mixing backends.
+Linux Actions may isolate some Qt widgets in a subprocess (`tests/qt_subprocess.py`) to avoid process-wide aborts when mixing backends.
 
 ## Tests (what is actually covered)
 
-| Area | Tests (examples) |
-|------|------------------|
+| Area | Tests |
+|------|-------|
 | DAT parse / scan | `test_dat_parser.py`, `test_dat_scan.py` |
-| Selection / viewer pure logic | `test_selection_logic.py`, `test_viewer_logic.py`, `test_selection_gate.py` |
+| Selection / gate | `test_selection_logic.py`, `test_selection_gate.py` |
+| Region + kinematics | `test_region_and_kinematics.py` |
 | Trajectory cancel | `test_trajectory_cancel.py` |
-| Render / interaction | `test_render_pixels.py`, `test_interaction_paths.py`, `test_gui_smoke.py` |
-| Perf paths | `test_perf_paths.py`, `test_deep_paths.py` |
+| Viewer / render / interaction | `test_viewer_logic.py`, `test_render_pixels.py`, `test_interaction_paths.py`, `test_gui_smoke.py` |
+| Perf / deep paths | `test_perf_paths.py`, `test_deep_paths.py` |
 
 ## Related ZDEM tools
 
 | Repo | Role |
 |------|------|
-| [ZDEM_Salt_Kinematics](https://github.com/Phoenix0531-sudo/ZDEM_Salt_Kinematics) | Post-process salt geometry metrics |
+| [ZDEM_Salt_Kinematics](https://github.com/Phoenix0531-sudo/ZDEM_Salt_Kinematics) | Salt geometry metrics |
 | [ZDEM_Area_Conservation](https://github.com/Phoenix0531-sudo/ZDEM_Area_Conservation) | Area conservation / triangulation |
 | [ZDEM_Bond_Fracture](https://github.com/Phoenix0531-sudo/ZDEM_Bond_Fracture) | Bond damage series |
 | [ZDEM_Model_Editor](https://github.com/Phoenix0531-sudo/ZDEM_Model_Editor) | Model file visual editor |
@@ -134,6 +141,7 @@ Linux GitHub Actions constructs some Qt widgets in an **isolated subprocess** (`
 
 - **In:** ZDEM 2D dumps, interactive ID tracking, true-radius display, region locks, export/report hooks
 - **Out:** 3D solver UI, cloud collaboration, automatic constitutive inversion
+- Full-campaign GUI screenshots of proprietary lab data are not committed; use local runs + evidence script for public proof
 
 ## License
 
