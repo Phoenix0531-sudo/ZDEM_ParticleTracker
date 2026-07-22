@@ -18,3 +18,13 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["zdem_particle_tracker*"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]
