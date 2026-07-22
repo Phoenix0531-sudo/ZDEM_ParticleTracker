@@ -1,151 +1,194 @@
 # ZDEM Particle Tracker
 
-**High-performance particle tracking desktop app with VisPy rendering**
+**High-performance particle tracking desktop app with VisPy true-radius rendering**
 
 [English](README.md) | [中文](README.zh-CN.md)
 
 ![CI](https://github.com/Phoenix0531-sudo/ZDEM_ParticleTracker/actions/workflows/ci.yml/badge.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 
-二维 ZDEM 离散元实验结果查看与单颗粒轨迹追踪工具（Windows / Python）。
+Desktop viewer and single-particle trajectory tracker for 2D **ZDEM** (discrete-element) experiment dumps on Windows / Python.
 
-## 主要功能
+This is a research workflow tool, not a generic DEM GUI: it understands ZDEM `all_*.dat` / `all_*_ini.dat` layouts, permanent particle IDs, color# groups, wall columns, and deposition (`_ini`) framing.
 
-- 扫描实验目录中的 `all_*.dat` / `all_*_ini.dat`
-- **默认时间起点 = 前导沉积阶段最后一个 `_ini` 文件**
-- VisPy Mesh 真半径圆盘绘制（非 GL_POINTS）
-- 按 color# / Group / 单色着色
-- 实验区域：用户锁定 > 外墙 > 元数据
-- 永久颗粒 ID 点击 / 输入追踪
-- 位移、路径长度、`v = Δx/Δstep` 速度曲线
-- 异步帧加载 + LRU + 预取；播放默认 BASIC 解析
-- 项目配置 `.zdemtrack.json`（不写实验数据）
+## Why this exists
 
-## 支持 / 不支持
+ZDEM salt-tectonics / orogen-scale experiments write tens of thousands of per-step text dumps. Opening them one-by-one is useless for:
 
-| 支持 | 不支持（第一版） |
-|------|------------------|
-| `all_<step>.dat` | `.sav` 二进制 |
-| `all_<step>_ini.dat` | `vtk_inters_*.vtk` 接触网 |
-| 单颗粒轨迹 | 多颗粒同时追踪 |
-| 剥蚀 / 文件错误区分 | 周期边界 |
+1. **Playback** of the full loading history without reloading every frame from disk on the UI thread
+2. **True geometric scale** (radius as real disc radius, not point markers with white halos)
+3. **Permanent-ID tracking** across frames (local `index` is **not** stable)
+4. **Honest region bounds** — user lock > outer walls > metadata, never silent auto-crop to the particle Y-bbox alone
 
-## 关于 `_ini`（沉积阶段）
+Particle Tracker is built around those four constraints.
 
-ZDEM 造山带/盐构造实验常见两段输出：
+## Features
 
-1. **沉积 / 初始化阶段**：`all_0000000000_ini.dat` … `all_0000006000_ini.dat`
-2. **正式加载变形**：`all_0000026000.dat` …
+- Scan experiment folders for `all_*.dat` / `all_*_ini.dat`
+- **Default session start** = last leading deposition `*_ini` file (not mid-run restarts)
+- VisPy **Mesh** true-radius discs (not `GL_POINTS` / marker sprites)
+- Coloring: color# / Group / solid
+- Experiment region priority: **user lock > walls > metadata**
+- Click or type a permanent particle ID to track
+- Displacement, path length, velocity `v = Δx / Δstep`
+- Async frame load + LRU(5) + prefetch; playback defaults to BASIC parse
+- Project file `.zdemtrack.json` (never written into experiment data)
+- Rotating logs under `%LOCALAPPDATA%\ZDEM_ParticleTracker\logs\` (`ZDEM_LOG_LEVEL`, `ZDEM_LOG_CONSOLE`)
 
-程序把**从目录开头起连续的 `*_ini.dat`** 视为沉积阶段，  
-**默认起始帧 = 最后一个前导 `_ini`**（沉积结束、正式实验前的形态）。  
-中途重启产生的 `*_ini`（前面已有非 ini 文件）**不会**当作默认起点。
+## Supported / not supported
 
-用户可在左侧「时间范围」中改起始/结束/间隔 N。
+| Supported | Not in v1 |
+|-----------|-----------|
+| `all_<step>.dat` | `.sav` binary |
+| `all_<step>_ini.dat` | `vtk_inters_*.vtk` contact nets |
+| Single-particle track | Multi-particle simultaneous tracks |
+| Erosion vs file-error split | Periodic BC handling |
 
-## 环境
+## Deposition frames (`_ini`)
+
+Typical orogen / salt experiments export two phases:
+
+1. **Deposition / init**: `all_0000000000_ini.dat` … `all_0000006000_ini.dat`
+2. **Main loading**: `all_0000026000.dat` …
+
+The app treats the **longest leading run of `*_ini.dat`** as deposition.  
+**Default start frame** = last of that leading run (end of deposition, start of formal loading).  
+`*_ini` files that appear after a non-ini frame (mid-run restart) are **not** used as the default zero.
+
+You can still override start / end / every-Nth frame in the left “time range” panel.
+
+## Environment
 
 - Python 3.11+
-- PySide6, NumPy, VisPy, SciPy, Matplotlib（可选 scienceplots）
+- PySide6, NumPy, VisPy, SciPy, Matplotlib (optional `scienceplots`)
 
 ```bash
 cd ZDEM_ParticleTracker
 python -m venv .venv
-.venv\Scripts\activate
+.venv\Scripts\activate   # Windows
 pip install -r requirements.txt
-# 或
-uv sync
+# or: uv sync
 ```
 
-## 运行
+## Run
 
 ```bash
 python main.py
-# 或
+# or
 python -m zdem_particle_tracker
-# 或
+# or
 uv run python -m zdem_particle_tracker
 ```
 
-## 选择与追踪
+## Selection & tracking rules
 
-- **仅可选择会话起始帧中存在的永久 ID**（位移零点 = 起始帧）
-- 点击或输入 ID 后 **自动提取轨迹**；「追踪」可手动重跑
-- **清除选择**（Esc）会同时清除轨迹、路径、曲线与数据表
-- 修改时间范围后会提示零点重置并清除旧轨迹
-- 选择/播放纯逻辑：`widgets/selection_logic.py`（可无 GUI 单测）
+- **Only IDs present at the session start frame are selectable** (displacement zero = start frame)
+- Click or enter an ID → trajectory extraction starts automatically; “Track” re-runs manually
+- **Clear selection** (Esc) clears trajectory, path, curves, and data table together
+- Changing the time range resets the zero point and clears old tracks
+- Pure selection logic lives in `widgets/selection_logic.py` (unit-tested without GUI)
 
-## 快捷键
+## Shortcuts
 
-| 键 | 作用 |
-|----|------|
-| Ctrl+O | 打开实验目录 |
-| Ctrl+S | 保存项目配置 |
-| Space | 播放/暂停 |
-| ← → | 上一帧/下一帧 |
-| Home/End | 首帧/末帧 |
-| F / G | 适配区域 / 适配颗粒 |
-| L | 定位选中颗粒 |
-| Esc | 清除选择与轨迹 |
-| F1 | 关于与快捷键 |
+| Key | Action |
+|-----|--------|
+| Ctrl+O | Open experiment directory |
+| Ctrl+S | Save project config |
+| Space | Play / pause |
+| ← → | Prev / next frame |
+| Home / End | First / last frame |
+| F / G | Fit region / fit particles |
+| L | Locate selected particle |
+| Esc | Clear selection + trajectory |
+| F1 | About & shortcuts |
 
-图例：双击仅显示该组；右键修改 Group 颜色（保存项目配置后持久化）。
+Legend: double-click isolates a group; right-click edits Group color (persisted in project config).
 
-## 字段说明
+## Field meanings
 
-| 字段 | 含义 |
-|------|------|
-| `index` | 当前文件内局部序号，**不可**跨帧追踪 |
-| `id` | **永久颗粒 ID**，追踪唯一键 |
-| `color` | DAT 原始 color 编号 |
-| `group` | 材料/层组（salt, sand, base…；`***`=未指定） |
+| Field | Meaning |
+|-------|---------|
+| `index` | Local row in **this file only** — **not** for cross-frame track |
+| `id` | **Permanent particle ID** — the only track key |
+| `color` | Raw DAT color index |
+| `group` | Material / layer group (`salt`, `sand`, `base`, …; `***` = unspecified) |
 
-## 剥蚀判定
+## Erosion vs file error
 
-- 文件有效但找不到目标 `id` → **剥蚀**，停止后续有效轨迹
-- 文件缺失/损坏 → **file_error**，**不**算剥蚀
+- File OK but target `id` missing → **erosion**; stop later valid track samples
+- File missing / corrupt → **file_error**; **not** counted as erosion
 
-## 性能设计
+## Performance notes
 
-- 颗粒：NumPy 数组 + VisPy Mesh 批量圆盘
-- 帧：QThread 加载，LRU(5)，预取下一帧
-- 播放 / 预取：`BASIC_FRAME`（按 Group 着色时自动 FULL）
-- 轨迹：`find_particle_in_file` 流式 + 线程池
+- Particles: NumPy arrays + VisPy Mesh batch discs
+- Frames: QThread load, LRU(5), prefetch next frame
+- Playback / prefetch: `BASIC_FRAME` (auto FULL when coloring by Group)
+- Tracks: streaming `find_particle_in_file` + thread pool
 
-## 日志
+## Logging
 
-写入用户目录，**不**写实验数据目录：
+Logs go to the user profile, **never** into experiment folders:
 
 `%LOCALAPPDATA%\ZDEM_ParticleTracker\logs\app.log`
 
-## 测试
+Env:
+
+- `ZDEM_LOG_LEVEL=DEBUG|INFO|WARNING|ERROR`
+- `ZDEM_LOG_CONSOLE=1` — also mirror INFO to stderr
+
+Offline probe (edit sample path inside the script if needed):
 
 ```bash
-# 默认快速套件（约 87 用例）
-uv run python -m unittest discover -s tests -t .
-
-# 真实样本 + 窗口点选（约 1 分钟，需显示）
-set ZDEM_GUI_SAMPLE=1
-uv run python -m unittest tests.test_gui_smoke.TestGuiSmoke.test_load_sample_and_start_ids
+python scripts/self_diag.py
 ```
 
-## 已知限制
+## Tests
 
-- 导出 UI 暂未接线（服务代码保留）
-- 单位标签尚未统一（坐标/半径量级随实验而定）
-- 无 OpenGL 环境无法使用 VisPy 主视图
-- `OPTIMIZATION_PLAN.md` 为历史笔记，以本 README 为准
+```bash
+# Pure unit suite (parsers, selection, scan) — CI uses this
+python -m pytest -q tests
 
-## 未来方向
+# or unittest
+python -m unittest discover -s tests -t .
 
-- 导出菜单、单位体系
-- 多颗粒 / 框选统计
-- VTK 接触网络
-- 墙体 visual 缓冲复用
+# Real sample + interactive pick (needs display; not CI)
+set ZDEM_GUI_SAMPLE=1
+python -m unittest tests.test_gui_smoke.TestGuiSmoke.test_load_sample_and_start_ids
+```
 
-## 许可与作者
+CI installs system Qt libs and runs headless (`QT_QPA_PLATFORM=offscreen`) for import-safe tests.
 
-科研用途。ECUT 盐构造 / ZDEM 工作流配套工具。
+## Known limits
+
+- Export UI not wired yet (service code kept)
+- Unit labels not unified (coords / radii follow each experiment)
+- Main view needs OpenGL / VisPy
+- Historical `OPTIMIZATION_PLAN.md` is notes only; this README is the contract
+
+## Roadmap
+
+- Export menu + unit system
+- Multi-particle / box selection stats
+- VTK contact networks
+- Wall visual buffer reuse
+
+## ZDEM Tool Family
+
+Related open-source tools in the same ZDEM / DEM workflow (same author):
+
+| Repo | Role |
+|------|------|
+| [ZDEM_ParticleTracker](https://github.com/Phoenix0531-sudo/ZDEM_ParticleTracker) | VisPy particle tracking desktop app (true-radius discs, permanent IDs) |
+| [ZDEM_Archiver](https://github.com/Phoenix0531-sudo/ZDEM_Archiver) | Safe purge of timestep dumps while keeping reproducible sources |
+| [ZDEM_Area_Conservation](https://github.com/Phoenix0531-sudo/ZDEM_Area_Conservation) | Delaunay coverage area vs load step |
+| [ZDEM_Bond_Fracture](https://github.com/Phoenix0531-sudo/ZDEM_Bond_Fracture) | Bond damage / fracture time series + ROI |
+| [ZDEM_Damage_Thresholds](https://github.com/Phoenix0531-sudo/ZDEM_Damage_Thresholds) | Damage evolution and crack thresholds |
+| [ZDEM_DFN](https://github.com/Phoenix0531-sudo/ZDEM_DFN) | Discrete fracture network generation |
+| [ZDEM_Model_Editor](https://github.com/Phoenix0531-sudo/ZDEM_Model_Editor) | tkinter + matplotlib model file editor |
+| [ZDEM_Salt_Kinematics](https://github.com/Phoenix0531-sudo/ZDEM_Salt_Kinematics) | Salt kinematics automation for ZDEM outputs |
+| [ZDEM3D_WEB](https://github.com/Phoenix0531-sudo/ZDEM3D_WEB) | 3D web CAE front (VTK + Django/React) |
+
+Typical pipeline: **Model_Editor / DFN → ZDEM run → Archiver (disk) → ParticleTracker / Bond / Area / Salt / Damage (analysis)**.
 
 ## License
 
