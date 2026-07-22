@@ -1,9 +1,9 @@
-"""Selection / start-frame gate unit tests."""
+"""Selection / start-frame gate unit tests (no GUI imports)."""
 from __future__ import annotations
 
 import unittest
 
-from zdem_particle_tracker.widgets.main_viewer import id_allowed_at_session_start
+from zdem_particle_tracker.widgets.selection_logic import id_allowed_at_session_start
 
 
 class TestStartFrameGate(unittest.TestCase):
