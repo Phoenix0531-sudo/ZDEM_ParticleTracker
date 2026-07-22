@@ -107,32 +107,32 @@ class TestCpuRaster(unittest.TestCase):
 
 
 class TestMainViewerConstruct(unittest.TestCase):
-    """Construct MainViewer without hanging (local / optional CI)."""
+    """Construct MainViewer without hanging — hard on CI via subprocess."""
 
     def test_construct_and_close(self):
-        if os.environ.get("GITHUB_ACTIONS") or os.environ.get("CI") == "true":
-            self.skipTest(
-                "MainViewer construct skipped on Linux CI to avoid Qt abort"
-            )
-        app = _qapp()
-        # On offscreen we expect PyQtGraph path
-        from zdem_particle_tracker.widgets import main_viewer as mv
+        from tests.qt_subprocess import assert_qt_script_ok
 
-        # Re-evaluate is not needed — module already imported with env at import time
-        t0 = time.time()
-        w = mv.MainViewer()
-        elapsed = time.time() - t0
-        self.assertLess(elapsed, 15.0, f"MainViewer construct too slow: {elapsed:.1f}s")
-        self.assertEqual(w.windowTitle(), "ZDEM Particle Tracker")
-        self.assertTrue(hasattr(w, "_plot"))
-        self.assertTrue(hasattr(w, "_select_particle"))
-        # Controls disabled until experiment opened
-        if hasattr(w, "_btn_track"):
-            # may be disabled via _set_controls_enabled(False)
-            pass
-        app.processEvents()
-        w.close()
-        app.processEvents()
+        code = """
+            import sys
+            import time
+            from PySide6.QtWidgets import QApplication
+            import zdem_particle_tracker.widgets.main_viewer as mv
+
+            app = QApplication.instance() or QApplication(sys.argv)
+            assert mv.HAVE_VISPY is False, mv.HAVE_VISPY
+            t0 = time.time()
+            w = mv.MainViewer()
+            elapsed = time.time() - t0
+            assert elapsed < 20.0, elapsed
+            assert w.windowTitle() == "ZDEM Particle Tracker"
+            assert hasattr(w, "_plot")
+            assert hasattr(w, "_select_particle")
+            app.processEvents()
+            w.close()
+            app.processEvents()
+            print("SUBPROC_OK")
+        """
+        assert_qt_script_ok(self, code, timeout=90.0)
 
     def test_backend_selection_helpers(self):
         # Pure env logic

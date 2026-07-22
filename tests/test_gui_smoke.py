@@ -31,13 +31,19 @@ class TestGuiSmoke(unittest.TestCase):
         self.assertTrue(hasattr(MainViewer, "_setup_shortcuts"))
 
     def test_qapplication_platform(self):
-        from PySide6.QtWidgets import QApplication
+        # Avoid creating QApplication in the parent pytest process on Linux CI
+        # (same-process QWidget later can abort after OpenGL imports).
+        from tests.qt_subprocess import assert_qt_script_ok
 
-        app = QApplication.instance()
-        if app is None:
-            app = QApplication(sys.argv)
-        name = getattr(app, "platformName", lambda: "unknown")()
-        self.assertTrue(name is None or isinstance(name, str) or name == "unknown")
+        code = """
+            import sys
+            from PySide6.QtWidgets import QApplication
+            app = QApplication.instance() or QApplication(sys.argv)
+            name = app.platformName()
+            assert isinstance(name, str) and name, name
+            print("SUBPROC_OK")
+        """
+        assert_qt_script_ok(self, code)
 
     def test_backend_env_helpers(self):
         from zdem_particle_tracker.rendering.backend import (
@@ -50,46 +56,20 @@ class TestGuiSmoke(unittest.TestCase):
 
     def test_mainviewer_pyqtgraph_subprocess(self):
         """Isolated process: force PyQtGraph + offscreen — must construct without hang."""
-        import subprocess
-        import textwrap
+        from tests.qt_subprocess import assert_qt_script_ok
 
-        code = textwrap.dedent(
-            """
-            import os, sys
-            os.environ["QT_QPA_PLATFORM"] = "offscreen"
-            os.environ["ZDEM_FORCE_PYQTGRAPH"] = "1"
+        code = """
+            import sys
             from PySide6.QtWidgets import QApplication
             app = QApplication(sys.argv)
-            # Fresh import of main_viewer under forced env
-            import importlib
             import zdem_particle_tracker.widgets.main_viewer as mv
-            importlib.reload(mv)
             assert mv.HAVE_VISPY is False, mv.HAVE_VISPY
             w = mv.MainViewer()
             assert w.windowTitle() == "ZDEM Particle Tracker"
             w.close()
             print("SUBPROC_OK")
-            """
-        )
-        env = os.environ.copy()
-        env["QT_QPA_PLATFORM"] = "offscreen"
-        env["ZDEM_FORCE_PYQTGRAPH"] = "1"
-        # Ensure project root on path
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")
-        r = subprocess.run(
-            [sys.executable, "-c", code],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            env=env,
-            cwd=root,
-        )
-        if r.returncode != 0:
-            self.fail(
-                f"subprocess failed code={r.returncode}\nstdout={r.stdout}\nstderr={r.stderr}"
-            )
-        self.assertIn("SUBPROC_OK", r.stdout)
+        """
+        assert_qt_script_ok(self, code, timeout=90.0)
 
 
 if __name__ == "__main__":

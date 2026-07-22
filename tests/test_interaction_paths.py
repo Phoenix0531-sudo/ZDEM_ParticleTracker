@@ -189,121 +189,120 @@ class TestInteractionLogic(unittest.TestCase):
 
 
 class TestSidePanelFactory(unittest.TestCase):
-    """Qt chrome builders without VisPy MainViewer.
+    """Qt chrome builders in an isolated process (no OpenGL canvas).
 
-    Skipped on GitHub Actions: QWidget under offscreen Qt on Linux runners
-    has aborted the process (exit 134). Pure logic tests above still cover
-    the same bindings without creating widgets.
+    Must stay hard on CI: parent-process QWidget can abort (exit 134) on
+    Linux runners after pyqtgraph/QtOpenGL have been imported elsewhere.
     """
 
-    @classmethod
-    def setUpClass(cls):
-        if os.environ.get("GITHUB_ACTIONS") or os.environ.get("CI") == "true":
-            raise unittest.SkipTest(
-                "Qt widget factory is abort-prone on headless Linux CI; run locally"
-            )
-        from PySide6.QtWidgets import QApplication
-
-        cls.app = QApplication.instance() or QApplication(sys.argv)
-
     def test_build_left_right_playback(self):
-        from PySide6.QtWidgets import QWidget
+        from tests.qt_subprocess import assert_qt_script_ok
 
-        from zdem_particle_tracker.ui.side_panels import (
-            build_left_panel,
-            build_playback_bar,
-            build_right_panel,
-        )
+        code = """
+            import sys
+            from PySide6.QtWidgets import QApplication, QWidget
 
-        parent = QWidget()
-        noop = lambda *a, **k: None
-        left = build_left_panel(
-            parent,
-            default_dir="D:/tmp",
-            on_browse=noop,
-            on_scan=noop,
-            on_apply_range=noop,
-            on_color_mode=noop,
-            on_scale=noop,
-            on_render=noop,
-            on_apply_region=noop,
-            on_redetect=noop,
-            on_fit_region=noop,
-            on_fit_particles=noop,
-            on_quality=noop,
-            on_group_visibility=noop,
-            on_isolate_group=noop,
-            on_show_all_groups=noop,
-            on_show_selected_group=noop,
-            on_group_color=noop,
-        )
-        self.assertTrue(left.wall_cb.isChecked())
-        self.assertEqual(left.dir_input.text(), "D:/tmp")
-        left.cmb_start.addItem("step 100", 100)
-        left.cmb_end.addItem("step 200", 200)
-        self.assertEqual(left.cmb_start.count(), 1)
+            from zdem_particle_tracker.ui.side_panels import (
+                build_left_panel,
+                build_playback_bar,
+                build_right_panel,
+            )
+            from zdem_particle_tracker.widgets.viewer_logic import (
+                color_mode_from_radio,
+                parse_permanent_id_text,
+                validate_region_bounds,
+            )
 
-        right = build_right_panel(
-            parent,
-            on_track=noop,
-            on_locate=noop,
-            on_clear=noop,
-            on_path_toggle=noop,
-            on_path_range=noop,
-        )
-        self.assertIn("ID:", right.lbls)
-        self.assertIn("ΔX:", right.dlbls)
-        right.id_input.setText("123")
-        pid, err = parse_permanent_id_text(right.id_input.text())
-        self.assertEqual(pid, 123)
-        self.assertIsNone(err)
+            app = QApplication.instance() or QApplication(sys.argv)
+            assert app.platformName() in ("offscreen", "minimal", "null", "windows", "cocoa", "xcb"), app.platformName()
 
-        pb = build_playback_bar(
-            parent,
-            on_first=noop,
-            on_prev=noop,
-            on_play=noop,
-            on_next=noop,
-            on_last=noop,
-            on_slider=noop,
-            on_cancel_traj=noop,
-        )
-        self.assertEqual(len(pb.play_buttons), 5)
-        self.assertFalse(pb.traj_progress.isVisible())
-        pb.slider.setRange(0, 10)
-        pb.slider.setValue(3)
-        self.assertEqual(pb.slider.value(), 3)
+            parent = QWidget()
+            noop = lambda *a, **k: None
+            left = build_left_panel(
+                parent,
+                default_dir="/tmp/zdem",
+                on_browse=noop,
+                on_scan=noop,
+                on_apply_range=noop,
+                on_color_mode=noop,
+                on_scale=noop,
+                on_render=noop,
+                on_apply_region=noop,
+                on_redetect=noop,
+                on_fit_region=noop,
+                on_fit_particles=noop,
+                on_quality=noop,
+                on_group_visibility=noop,
+                on_isolate_group=noop,
+                on_show_all_groups=noop,
+                on_show_selected_group=noop,
+                on_group_color=noop,
+            )
+            assert left.wall_cb.isChecked()
+            assert left.dir_input.text() == "/tmp/zdem"
+            left.cmb_start.addItem("step 100", 100)
+            left.cmb_end.addItem("step 200", 200)
+            assert left.cmb_start.count() == 1
 
-        # color radio → mode helper
-        left.rb_cm_group.setChecked(True)
-        mode = color_mode_from_radio(
-            group_checked=left.rb_cm_group.isChecked(),
-            solid_checked=left.rb_cm_solid.isChecked(),
-        )
-        self.assertEqual(mode, "group")
+            right = build_right_panel(
+                parent,
+                on_track=noop,
+                on_locate=noop,
+                on_clear=noop,
+                on_path_toggle=noop,
+                on_path_range=noop,
+            )
+            assert "ID:" in right.lbls
+            assert "ΔX:" in right.dlbls
+            right.id_input.setText("123")
+            pid, err = parse_permanent_id_text(right.id_input.text())
+            assert pid == 123 and err is None
 
-        # region spins
-        left.sp_xmin.setValue(0)
-        left.sp_xmax.setValue(100)
-        left.sp_ymin.setValue(0)
-        left.sp_ymax.setValue(50)
-        self.assertIsNone(
-            validate_region_bounds(
+            pb = build_playback_bar(
+                parent,
+                on_first=noop,
+                on_prev=noop,
+                on_play=noop,
+                on_next=noop,
+                on_last=noop,
+                on_slider=noop,
+                on_cancel_traj=noop,
+            )
+            assert len(pb.play_buttons) == 5
+            assert hasattr(pb, "prog_host") and pb.prog_host is not None
+            pb.slider.setRange(0, 10)
+            pb.slider.setValue(3)
+            assert pb.slider.value() == 3
+
+            left.rb_cm_group.setChecked(True)
+            mode = color_mode_from_radio(
+                group_checked=left.rb_cm_group.isChecked(),
+                solid_checked=left.rb_cm_solid.isChecked(),
+            )
+            assert mode == "group"
+
+            left.sp_xmin.setValue(0)
+            left.sp_xmax.setValue(100)
+            left.sp_ymin.setValue(0)
+            left.sp_ymax.setValue(50)
+            assert validate_region_bounds(
                 left.sp_xmin.value(),
                 left.sp_xmax.value(),
                 left.sp_ymin.value(),
                 left.sp_ymax.value(),
-            )
-        )
-        left.sp_xmax.setValue(-1)
-        self.assertIsNotNone(
-            validate_region_bounds(
+            ) is None
+            left.sp_xmax.setValue(-1)
+            assert validate_region_bounds(
                 left.sp_xmin.value(),
                 left.sp_xmax.value(),
                 left.sp_ymin.value(),
                 left.sp_ymax.value(),
-            )
-        )
+            ) is not None
+
+            parent.close()
+            print("SUBPROC_OK")
+        """
+        assert_qt_script_ok(self, code)
 
 
 if __name__ == "__main__":
