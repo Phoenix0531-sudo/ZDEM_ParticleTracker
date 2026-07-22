@@ -47,6 +47,7 @@ def parse_dat_file(
     """Parse a ZDEM all_*.dat file. Returns ParticleData.
 
     For FIND_SINGLE_PARTICLE use :func:`find_particle_in_file` instead.
+    Missing/unreadable files return empty ParticleData (never raise).
     """
     if mode is ParseMode.FIND_SINGLE_PARTICLE:
         hit = find_particle_in_file(path, int(target_id or -1))
@@ -79,7 +80,12 @@ def parse_dat_file(
     need_particles = mode is not ParseMode.METADATA_ONLY
     need_walls = mode is not ParseMode.METADATA_ONLY
 
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
+    try:
+        fh = open(path, "r", encoding="utf-8", errors="replace")
+    except OSError:
+        return pd
+
+    with fh as f:
         for raw in f:
             line = raw.rstrip("\n\r")
             s = line.strip()
@@ -170,18 +176,37 @@ def parse_dat_file(
                     continue
                 if in_walls and wall_header:
                     parts = s.split()
-                    if len(parts) >= 6:
-                        try:
-                            x1 = float(parts[2])
-                            y1 = float(parts[3])
-                            x2 = float(parts[4])
-                            y2 = float(parts[5])
-                            wdata.append([x1, y1, x2, y2])
-                            wall_lines += 1
-                            if pd.wall_count > 0 and wall_lines >= pd.wall_count:
-                                in_walls = False
-                        except Exception:
+                    # Real ZDEM: index id P1[0] P1[1] P2[0] P2[1] ...
+                    # Minimal / tests: x1 y1 x2 y2
+                    try:
+                        if len(parts) >= 6:
+                            # Prefer index/id + endpoints when first two look integer-like
+                            try:
+                                int(float(parts[0]))
+                                int(float(parts[1]))
+                                x1 = float(parts[2])
+                                y1 = float(parts[3])
+                                x2 = float(parts[4])
+                                y2 = float(parts[5])
+                            except Exception:
+                                x1 = float(parts[0])
+                                y1 = float(parts[1])
+                                x2 = float(parts[2])
+                                y2 = float(parts[3])
+                        elif len(parts) >= 4:
+                            x1 = float(parts[0])
+                            y1 = float(parts[1])
+                            x2 = float(parts[2])
+                            y2 = float(parts[3])
+                        else:
+                            continue
+                        wdata.append([x1, y1, x2, y2])
+                        wall_lines += 1
+                        if pd.wall_count > 0 and wall_lines >= pd.wall_count:
                             in_walls = False
+                    except Exception:
+                        # Non-numeric line → end of wall data
+                        in_walls = False
 
             elif section == "particles" and need_particles:
                 if "ball num" in lc:
@@ -416,14 +441,11 @@ def find_particle_in_file(path: str, target_id: int) -> SingleParticleHit:
 
 
 def find_dat_files(directory: str) -> list[tuple[int, str]]:
-    """Return sorted (step, path) for all_*.dat and all_*_ini.dat files."""
-    pat = re.compile(r"^all_(\d+)(?:_ini)?\.dat$")
-    files = []
-    if not os.path.isdir(directory):
-        return files
-    for e in os.scandir(directory):
-        m = pat.match(e.name)
-        if m and e.is_file():
-            files.append((int(m.group(1)), e.path))
-    files.sort(key=lambda x: x[0])
-    return files
+    """Return sorted (step, path) for all_*.dat and all_*_ini.dat files.
+
+    Thin wrapper over :func:`dat_scan.scan_dat_files` for backward
+    compatibility. Prefer :mod:`dat_scan` when you need ``is_ini`` metadata.
+    """
+    from .dat_scan import scan_dat_files
+
+    return [(e.step, e.path) for e in scan_dat_files(directory)]
