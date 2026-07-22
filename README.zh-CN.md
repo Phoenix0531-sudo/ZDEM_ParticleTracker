@@ -10,13 +10,13 @@
 
 研究用桌面端，服务 **ZDEM** 帧序列（`all_*.dat` / 沉积 `_ini`）。为盐构造 / 颗粒 DEM 后处理定见设计，不是通用多物理 GUI。
 
-## 截图（真实 GUI）
+## 截图（真实 GUI + 真实测试样本）
 
 <table>
   <tr>
     <td width="50%">
-      <img src="docs/screenshots/gui_hero.png" alt="主界面 120 颗粒">
-      <br><strong>MainViewer 真窗截图</strong> — 120 颗粒 + 中文界面
+      <img src="docs/screenshots/gui_hero.png" alt="MainViewer 加载真实盐构造 ZDEM 帧">
+      <br><strong>MainViewer 真窗截图</strong> — 与测试相同的样本路径，约 2.7 万颗粒分层砂/盐
     </td>
     <td width="50%">
       <img src="docs/screenshots/evidence.png" alt="服务层证据">
@@ -26,11 +26,12 @@
 </table>
 
 ```bash
+# 加载 tests/test_render_pixels.py 中的 SAMPLE_CANDIDATES（本地真实 DAT）
 uv run python scripts/capture_real_shots.py
 uv run python scripts/generate_evidence.py
 ```
 
-GUI 使用**合法合成 ZDEM DAT**（非空画布）。专有实验数据不入库。
+截图 = **`MainViewer.load_directory()` 后 Qt `grab()`**。颗粒**不是**脚本手动画的。大体量实验数据只在本地，不入库。
 
 ## 为什么存在
 

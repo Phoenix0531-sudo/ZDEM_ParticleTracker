@@ -10,34 +10,29 @@
 
 Research desktop app for **ZDEM** frame sequences (`all_*.dat` / deposition `_ini` frames). Opinionated for salt-tectonics / granular DEM post-processing on Windows + Python — not a generic multi-physics GUI.
 
-## Screenshots (real GUI grab)
+## Screenshots (real GUI + real ZDEM sample)
 
 <table>
   <tr>
     <td width="50%">
-      <img src="docs/screenshots/gui_hero.png" alt="MainViewer with 120 synthetic ZDEM particles">
-      <br><strong>MainViewer (Qt grab)</strong> — 120 particles, walls, Chinese UI, step 0 ready
+      <img src="docs/screenshots/gui_hero.png" alt="MainViewer loading real salt-tectonics ZDEM frame">
+      <br><strong>MainViewer (Qt grab)</strong> — real DAT from the same sample path used in tests (~27k particles, layered sand/salt)
     </td>
     <td width="50%">
       <img src="docs/screenshots/evidence.png" alt="Service-level evidence">
-      <br><strong>Service evidence</strong> — selection gate + v=Δx/Δstep card
-    </td>
-  </tr>
-  <tr>
-    <td colspan="2">
-      <img src="docs/screenshots/preview.png" alt="Domain schematic">
-      <br><strong>Domain schematic</strong> — parse → region → mesh render → trajectory
+      <br><strong>Service evidence</strong> — selection gate + v=Δx/Δstep
     </td>
   </tr>
 </table>
 
 ```bash
-# real window grab (Windows Qt; uses valid synthetic ZDEM DAT)
+# real window grab — loads SAMPLE_CANDIDATES from tests/test_render_pixels.py
+# (local lab ZDEM dumps; not hand-drawn particles)
 uv run python scripts/capture_real_shots.py
 uv run python scripts/generate_evidence.py
 ```
 
-GUI shots use a **valid synthetic ZDEM DAT** (Parameter/Wall/Ball Data) so the canvas is not empty. Proprietary lab campaigns are not committed.
+Screenshots are **Qt `grab()` of MainViewer** after `load_directory()` on an existing test sample (see `tests/test_render_pixels.py`). Particles are **not** invented in the capture script. Large campaign dumps stay on local disk and are not committed.
 
 ## Why this exists
 

@@ -1,0 +1,6 @@
+sample_dir=D:\2_Temp\StructLab\Projects\25_造山带尺度盐构造\物理实验复刻\2\data
+particles=27269
+step=126000
+nframes=19
+source=real ZDEM DAT from test sample path (tests/test_render_pixels SAMPLE_CANDIDATES)
+note=not synthetic random particles; camera zoomed to particle bbox for readability
