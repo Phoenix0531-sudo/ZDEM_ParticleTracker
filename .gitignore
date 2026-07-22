@@ -13,3 +13,6 @@ test_markers.png
 .DS_Store
 .idea/
 .vscode/
+
+.git.broken.bak/
+

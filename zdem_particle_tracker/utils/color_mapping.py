@@ -60,6 +60,47 @@ def color_number_to_qcolor(c: int) -> QColor:
     return QColor((c * 37 + 30) % 256, (c * 71 + 40) % 256, (c * 113 + 150) % 256)
 
 
+def groups_to_rgba(groups: np.ndarray, mapper: "ColorMapping | None" = None, alpha: float = 1.0) -> np.ndarray:
+    """Vectorized group-name → RGBA float32 (N, 4)."""
+    m = mapper or _DEFAULT_MAPPER
+    g = np.asarray(groups, dtype=object).ravel()
+    n = g.size
+    if n == 0:
+        return np.zeros((0, 4), dtype=np.float32)
+    out = np.empty((n, 4), dtype=np.float32)
+    # Cache packed→rgba for unique groups
+    cache: dict[str, tuple[float, float, float]] = {}
+    for i, name in enumerate(g):
+        key = str(name) if name is not None else "***"
+        rgb = cache.get(key)
+        if rgb is None:
+            packed = m.get_color(key)
+            rgb = (
+                ((packed >> 16) & 0xFF) / 255.0,
+                ((packed >> 8) & 0xFF) / 255.0,
+                (packed & 0xFF) / 255.0,
+            )
+            cache[key] = rgb
+        out[i, 0] = rgb[0]
+        out[i, 1] = rgb[1]
+        out[i, 2] = rgb[2]
+        out[i, 3] = float(alpha)
+    return out
+
+
+def solid_rgba(n: int, rgb=(0.45, 0.55, 0.70), alpha: float = 1.0) -> np.ndarray:
+    """Single solid color for N particles."""
+    n = int(n)
+    if n <= 0:
+        return np.zeros((0, 4), dtype=np.float32)
+    out = np.empty((n, 4), dtype=np.float32)
+    out[:, 0] = float(rgb[0])
+    out[:, 1] = float(rgb[1])
+    out[:, 2] = float(rgb[2])
+    out[:, 3] = float(alpha)
+    return out
+
+
 class ColorMapping:
     """Stable mapping from group names to colours."""
 

@@ -110,7 +110,7 @@ class SeriesPlotWidget(QWidget):
         self._ax.text(
             0.5,
             0.5,
-            "No trajectory",
+            "暂无轨迹\n请选择颗粒后自动追踪",
             transform=self._ax.transAxes,
             ha="center",
             va="center",

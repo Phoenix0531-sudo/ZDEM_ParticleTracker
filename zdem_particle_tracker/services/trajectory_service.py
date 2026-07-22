@@ -115,6 +115,8 @@ class _TrajectoryWorker(QThread):
             return
 
         # Parallel parse (I/O bound). Preserve order, stop after first eroded.
+        # Progress uses contiguous time-order prefix so the bar never jumps backward
+        # when futures complete out of order.
         results: dict[int, object] = {}
         try:
             with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
@@ -122,18 +124,21 @@ class _TrajectoryWorker(QThread):
                     pool.submit(self._scan_one, idx, finfo): idx
                     for idx, finfo in enumerate(self._files)
                 }
-                done_count = 0
+                done_flags = [False] * total
+                contiguous = 0
                 for fut in as_completed(futures):
                     if self._cancelled:
-                        # Best-effort cancel remaining
                         for f in futures:
                             f.cancel()
                         return
                     idx, status, hit = fut.result()
                     results[idx] = (status, hit)
-                    done_count += 1
-                    # Progress is approximate during parallel phase
-                    self.progress.emit(min(done_count, total), total)
+                    if 0 <= idx < total:
+                        done_flags[idx] = True
+                    while contiguous < total and done_flags[contiguous]:
+                        contiguous += 1
+                    # Contiguous prefix = "frames 0..k-1 ready" (time order)
+                    self.progress.emit(contiguous, total)
 
             trajectory: Trajectory = []
             first_x: Optional[float] = None

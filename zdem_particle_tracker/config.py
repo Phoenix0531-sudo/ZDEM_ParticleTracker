@@ -269,6 +269,34 @@ QToolTip {
     font-size: 12px;
 }
 
+/* === StatusBar === */
+QStatusBar {
+    background: #f5f5f7;
+    border-top: 1px solid #d2d2d7;
+    color: #1d1d1f;
+}
+QStatusBar QLabel {
+    color: #86868b;
+    font-size: 12px;
+}
+
+/* === Empty-state secondary labels === */
+QLabel#secondary {
+    color: #86868b;
+    font-size: 12px;
+}
+
+/* === Dialog === */
+QDialog {
+    background: #f5f5f7;
+}
+QTextBrowser {
+    background: #ffffff;
+    border: 1px solid #d2d2d7;
+    border-radius: 6px;
+    padding: 8px;
+}
+
 /* === Menu === */
 QMenuBar {
     background: transparent;
@@ -292,6 +320,7 @@ QMenu::item:selected {
     background: #e8f0fe;
     color: #0071e3;
 }
+
 """
 
 

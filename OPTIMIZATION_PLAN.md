@@ -1,36 +1,19 @@
-# ZDEM Particle Tracker — Full Code Review & Optimization Plan
+# 历史笔记（已过时）
 
-## Issues Found (Manual Review)
+本文件保留为开发过程记录，**不再作为优化 backlog**。
 
-### 🎨 Rendering (Critical — VisPy migration)
-- **pyqtgraph ScatterPlotItem** ~30-50ms for 50k pts (OK), but zoom/pan is CPU-bound
-- **VisPy** 50k pts in 56ms with GPU acceleration, smoother interaction
-- **Plan**: Replace with VisPy Markers visual (GPU)
+当前权威说明见：
 
-### ⚡ File Parsing (Performance bottleneck)
-- **300ms per file × 21 files = 6.3s sequential**
-- Current: background thread parses files one-by-one
-- **Fix**: `concurrent.futures.ThreadPoolExecutor(max_workers=4)` parallel parsing
-- **Fix**: Pre-cache all frames during trajectory extraction
+- `README.md` — 功能、_ini 默认起点、运行与限制
+- 代码：`parsers/dat_scan.py`、`widgets/main_viewer.py`、`rendering/vispy_renderer.py`
 
-### 💾 Memory 
-- 21 frames × 50k particles × (id+i+x+y+rad+color) ≈ 50MB for all cached frames
-- **Fix**: LRU cache with max 10 frames (add to `_frame_cache`)
+已完成（摘要）：
 
-### 🖥️ UI/UX
-- **Plain QGroupBox styling** — needs macOS-like cards
-- **Right panel labels overlap** — QHBoxLayout in 220px width causes text clipping
-- **No loading indicator during track** — status bar message is subtle
-- **No auto-scroll on table update** — scroll to bottom after tracking
+- VisPy Mesh 真圆盘（非 pyqtgraph Scatter / GL_POINTS）
+- 并行轨迹流式查找 + 运动学
+- 异步帧加载 / LRU / 预取
+- 前导 `_ini` 默认时间起点
+- 着色 color# / Group / 单色
+- 项目配置延迟恢复选中颗粒
 
-### 🐛 Bugs
-- **`_on_track` lambda captures pid by value** — OK, but `finfos` captures `self._frame_files` which could change
-- **Track button doesn't disable during extraction** — user can click twice
-- **Trajectory path overlay not cleared on frame change** — stays visible when switching frames
-
-## VisPy Migration Plan
-1. `rendering/vispy_renderer.py` — GPU-accelerated particle renderer
-2. Embed via `vispy.app.Canvas` in QWidget
-3. Markers for particles, Line for walls/selection
-4. PanZoomCamera for 2D with aspect lock
-5. Keep pyqtgraph as fallback for displacement plots
+若需新优化项，请直接开 issue 或改代码，勿再更新本文件的「Plan」段落。

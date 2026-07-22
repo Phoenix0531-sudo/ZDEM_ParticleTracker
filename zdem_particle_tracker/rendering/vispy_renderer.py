@@ -32,6 +32,7 @@ class VisPyRenderer(QWidget):
         self._mesh = None
         self._wall_lines = []
         self._selection_markers = []
+        self._origin_markers = []
         self._traj_line = None
         self._xmin = self._xmax = self._ymin = self._ymax = 0
         self._signal_bridge = VisPySignalBridge()
@@ -308,7 +309,7 @@ class VisPyRenderer(QWidget):
             line.parent = None
         self._wall_lines.clear()
 
-    def set_selection(self, x, y, radius):
+    def set_selection(self, x, y, radius, particle_id=None):
         self.clear_selection()
         if x is None:
             return
@@ -338,6 +339,58 @@ class VisPyRenderer(QWidget):
             width=2,
         )
         self._selection_markers.append(cross_v)
+        if particle_id is not None:
+            try:
+                txt = scene.visuals.Text(
+                    f"ID {int(particle_id)}",
+                    color=(0.85, 0.1, 0.08, 1.0),
+                    font_size=10,
+                    pos=(float(x) + r * 2.2, float(y) + r * 2.2),
+                    anchor_x="left",
+                    anchor_y="bottom",
+                    parent=self._view.scene,
+                )
+                self._selection_markers.append(txt)
+            except Exception:
+                pass
+
+    def set_origin_marker(self, x, y, radius=None):
+        """Mark trajectory zero-point (start of displacement)."""
+        self.clear_origin_marker()
+        if x is None or y is None:
+            return
+        r = float(radius) if radius is not None else 80.0
+        r = max(r * 0.9, 40.0)
+        pts = self._circle_points(float(x), float(y), r, 32)
+        pts = np.vstack([pts, pts[:1]])
+        ring = scene.visuals.Line(
+            pos=pts,
+            color=(0.1, 0.35, 0.85, 0.95),
+            parent=self._view.scene,
+            width=2,
+        )
+        self._origin_markers.append(ring)
+        try:
+            txt = scene.visuals.Text(
+                "起点",
+                color=(0.1, 0.35, 0.85, 1.0),
+                font_size=9,
+                pos=(float(x) + r * 1.3, float(y) + r * 1.3),
+                anchor_x="left",
+                anchor_y="bottom",
+                parent=self._view.scene,
+            )
+            self._origin_markers.append(txt)
+        except Exception:
+            pass
+
+    def clear_origin_marker(self):
+        for m in getattr(self, "_origin_markers", []) or []:
+            try:
+                m.parent = None
+            except Exception:
+                pass
+        self._origin_markers = []
 
     def clear_selection(self):
         for m in self._selection_markers:
@@ -350,7 +403,7 @@ class VisPyRenderer(QWidget):
             return
         self._traj_line = scene.visuals.Line(
             pos=np.column_stack([xs, ys]).astype(np.float32),
-            color=(0.4, 0.4, 0.4, 0.9),
+            color=(0.35, 0.35, 0.38, 0.95),
             parent=self._view.scene,
             width=2,
             method="gl",
@@ -367,6 +420,7 @@ class VisPyRenderer(QWidget):
     def clear_all(self):
         self.clear_walls()
         self.clear_selection()
+        self.clear_origin_marker()
         self.clear_trajectory_path()
         if self._mesh is not None:
             self._mesh.parent = None

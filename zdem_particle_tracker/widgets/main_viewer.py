@@ -1,13 +1,14 @@
 """Main viewer — VisPy particles, trajectory, matplotlib series, Chinese UI."""
 from __future__ import annotations
 
+import logging
 import os
 from collections import Counter
 
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QColor
+from PySide6.QtGui import QAction, QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -35,12 +36,22 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QScrollArea,
+    QSpinBox,
+    QFrame,
 )
 
 from scipy.spatial import cKDTree
 
 from ..config import DEFAULT_DIR
-from ..parsers.dat_parser import ParseMode, find_dat_files, parse_dat_file
+from ..parsers.dat_parser import ParseMode, parse_dat_file
+from ..parsers.dat_scan import (
+    DatFileEntry,
+    default_end_index,
+    default_start_index,
+    leading_ini_end_index,
+    scan_dat_files,
+    select_range,
+)
 from ..services.trajectory_service import TrajectoryService, FileInfo
 from ..services.region_detector import RegionDetector
 from ..services.quality_report import check_file_list, check_frame
@@ -49,10 +60,27 @@ from ..services.project_config import (
     load_project_config,
     save_project_config,
 )
-from ..utils.color_mapping import ColorMapping, color_numbers_to_rgba, group_to_color
+from ..utils.color_mapping import (
+    ColorMapping,
+    color_numbers_to_rgba,
+    group_to_color,
+    groups_to_rgba,
+    solid_rgba,
+)
 from ..utils.frame_cache import LRUCache
 from ..workers.frame_load_worker import FrameLoadWorker
 from ..ui.group_legend_panel import GroupLegendPanel
+from ..ui.about_dialog import show_about_dialog, APP_VERSION
+from .selection_logic import (
+    filter_trajectory_path_xy,
+    id_allowed_at_session_start,
+    next_play_index,
+    pick_particle_id,
+    play_parse_mode_name,
+    validate_time_range_indices,
+)
+
+log = logging.getLogger("zdem_particle_tracker.main_viewer")
 
 # VisPy GPU renderer (auto-detect — may fail in headless mode)
 HAVE_VISPY = False
@@ -68,8 +96,11 @@ class MainViewer(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("ZDEM Particle Tracker")
-        self.resize(1400, 900)
-        self._frame_files: list[tuple[int, str]] = []
+        self.resize(1480, 920)
+        # Full catalog + active session slice
+        self._all_entries: list[DatFileEntry] = []
+        self._frame_entries: list[DatFileEntry] = []
+        self._frame_files: list[tuple[int, str]] = []  # (step, path) for active range
         self._current_idx = 0
         self._current_data = None
         self._selected_id = None
@@ -87,6 +118,7 @@ class MainViewer(QMainWindow):
         self._pending_slider_idx = 0
         self._hidden_groups: set[str] = set()
         self._color_map = ColorMapping()
+        self._color_mode = "color_number"  # color_number | group | solid
         self._region_initialized = False
         self._experiment_region = None  # (xmin, xmax, ymin, ymax, source)
         self._region_detector = RegionDetector()
@@ -95,11 +127,19 @@ class MainViewer(QMainWindow):
         self._current_worker = None
         self._last_quality_lines: list[str] = []
         self._project_path: str | None = None
+        self._pending_project: ProjectConfig | None = None
         self._prefetch_worker: FrameLoadWorker | None = None
         self._play_buttons: list[QPushButton] = []
+        self._frame_load_busy = False
+        self._play_waiting = False
+        self._path_to_current = True  # trajectory path clipped to current step
+        # Permanent IDs present in the session *start* frame (selection gate)
+        self._start_frame_ids: set[int] | None = None
+        self._auto_track_on_select = True
 
         self._setup_ui()
         self._setup_menu()
+        self._setup_shortcuts()
         self._play_timer = QTimer()
         self._play_timer.timeout.connect(self._on_play_tick)
         self._set_controls_enabled(False)
@@ -124,33 +164,80 @@ class MainViewer(QMainWindow):
         self._wall_cb.toggled.connect(self._render)
         ll.addWidget(self._wall_cb)
 
-        dv = QHBoxLayout()
-        self._rb_group = QButtonGroup(self)
+        # Display scale
+        gb_disp = QGroupBox("显示比例")
+        dv = QHBoxLayout(gb_disp)
+        self._rb_group_scale = QButtonGroup(self)
         self._rb_real = QRadioButton("真实比例")
         self._rb_real.setChecked(True)
         self._rb_enh = QRadioButton("增强可见性")
-        self._rb_group.addButton(self._rb_real)
-        self._rb_group.addButton(self._rb_enh)
+        self._rb_group_scale.addButton(self._rb_real)
+        self._rb_group_scale.addButton(self._rb_enh)
         self._rb_enh.toggled.connect(lambda: self._render())
         self._rb_real.toggled.connect(lambda: self._render())
         dv.addWidget(self._rb_real)
         dv.addWidget(self._rb_enh)
-        ll.addLayout(dv)
+        ll.addWidget(gb_disp)
 
-        ll.addWidget(QLabel("实验目录:"))
+        # Color mode
+        gb_cm = QGroupBox("着色模式")
+        cm_lay = QVBoxLayout(gb_cm)
+        self._color_mode_group = QButtonGroup(self)
+        self._rb_cm_color = QRadioButton("按 color#")
+        self._rb_cm_group = QRadioButton("按 Group")
+        self._rb_cm_solid = QRadioButton("单色")
+        self._rb_cm_color.setChecked(True)
+        for rb in (self._rb_cm_color, self._rb_cm_group, self._rb_cm_solid):
+            self._color_mode_group.addButton(rb)
+            cm_lay.addWidget(rb)
+            rb.toggled.connect(self._on_color_mode_changed)
+        ll.addWidget(gb_cm)
+
+        # Experiment directory
+        gb_dir = QGroupBox("实验目录")
+        dir_l = QVBoxLayout(gb_dir)
         self._dir_input = QLineEdit(DEFAULT_DIR)
         self._dir_input.setReadOnly(True)
-        ll.addWidget(self._dir_input)
+        dir_l.addWidget(self._dir_input)
         btn_row = QHBoxLayout()
         btn = QPushButton("浏览")
         btn.clicked.connect(self._browse)
         btn_row.addWidget(btn)
-        scan_btn = QPushButton("扫描")
+        scan_btn = QPushButton("重新扫描")
+        scan_btn.setObjectName("secondary")
         scan_btn.clicked.connect(self._scan_dir)
         btn_row.addWidget(scan_btn)
-        ll.addLayout(btn_row)
-        self._file_info = QLabel("")
-        ll.addWidget(self._file_info)
+        dir_l.addLayout(btn_row)
+        self._file_info = QLabel("尚未打开实验")
+        self._file_info.setObjectName("secondary")
+        self._file_info.setWordWrap(True)
+        dir_l.addWidget(self._file_info)
+        ll.addWidget(gb_dir)
+
+        # Time range — default start = last leading _ini
+        gb_range = QGroupBox("时间范围")
+        fl_r = QFormLayout(gb_range)
+        fl_r.setContentsMargins(8, 12, 8, 8)
+        fl_r.setSpacing(6)
+        self._cmb_start = QComboBox()
+        self._cmb_start.setMinimumWidth(140)
+        self._cmb_end = QComboBox()
+        self._cmb_end.setMinimumWidth(140)
+        self._sp_stride = QSpinBox()
+        self._sp_stride.setRange(1, 999)
+        self._sp_stride.setValue(1)
+        self._sp_stride.setToolTip("每 N 个文件取 1 帧（1=全部）")
+        fl_r.addRow("起始", self._cmb_start)
+        fl_r.addRow("结束", self._cmb_end)
+        fl_r.addRow("间隔 N", self._sp_stride)
+        self._lbl_ini_hint = QLabel("默认起点：最后一个前导 _ini（沉积结束）")
+        self._lbl_ini_hint.setObjectName("secondary")
+        self._lbl_ini_hint.setWordWrap(True)
+        fl_r.addRow(self._lbl_ini_hint)
+        btn_apply_range = QPushButton("应用范围")
+        btn_apply_range.clicked.connect(self._apply_time_range)
+        fl_r.addRow(btn_apply_range)
+        ll.addWidget(gb_range)
 
         # Group legend
         self._legend = GroupLegendPanel()
@@ -158,11 +245,13 @@ class MainViewer(QMainWindow):
         self._legend.isolate_group.connect(self._on_isolate_group)
         self._legend.show_all_groups.connect(self._on_show_all_groups)
         self._legend.show_selected_group.connect(self._on_show_selected_group)
+        self._legend.color_changed.connect(self._on_group_color_changed)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(self._legend)
         scroll.setMinimumHeight(120)
         scroll.setMaximumHeight(220)
+        scroll.setFrameShape(QFrame.NoFrame)
         ll.addWidget(scroll)
 
         # Region
@@ -179,12 +268,12 @@ class MainViewer(QMainWindow):
             spb.setRange(-1e9, 1e9)
             spb.setSingleStep(100.0)
             spb.setKeyboardTracking(False)
-        fl.addRow("X 最小 (Xmin)", self._sp_xmin)
-        fl.addRow("X 最大 (Xmax)", self._sp_xmax)
-        fl.addRow("Y 最小 (Ymin)", self._sp_ymin)
-        fl.addRow("Y 最大 (Ymax)", self._sp_ymax)
+        fl.addRow("X 最小", self._sp_xmin)
+        fl.addRow("X 最大", self._sp_xmax)
+        fl.addRow("Y 最小", self._sp_ymin)
+        fl.addRow("Y 最大", self._sp_ymax)
         self._lbl_region_src = QLabel("来源：—")
-        self._lbl_region_src.setStyleSheet("color:#666;font-size:11px")
+        self._lbl_region_src.setObjectName("secondary")
         fl.addRow(self._lbl_region_src)
         reg_btns = QHBoxLayout()
         btn_apply = QPushButton("应用区域")
@@ -197,19 +286,23 @@ class MainViewer(QMainWindow):
         fl.addRow(reg_btns)
         ll.addWidget(gb_reg)
 
+        fit_row = QHBoxLayout()
         btn2 = QPushButton("适配区域")
+        btn2.setObjectName("secondary")
         btn2.clicked.connect(self._fit_region)
-        ll.addWidget(btn2)
+        fit_row.addWidget(btn2)
         btn3 = QPushButton("适配颗粒")
+        btn3.setObjectName("secondary")
         btn3.clicked.connect(self._fit_particles)
-        ll.addWidget(btn3)
+        fit_row.addWidget(btn3)
+        ll.addLayout(fit_row)
         btn_q = QPushButton("数据质量报告")
         btn_q.setObjectName("secondary")
         btn_q.clicked.connect(self._show_quality_report)
         ll.addWidget(btn_q)
         ll.addStretch()
-        left.setMinimumWidth(240)
-        left.setMaximumWidth(320)
+        left.setMinimumWidth(260)
+        left.setMaximumWidth(340)
         sp.addWidget(left)
 
         # Center
@@ -317,8 +410,14 @@ class MainViewer(QMainWindow):
         hl.addWidget(self._id_input)
         g1l.addLayout(hl)
         self._btn_track = QPushButton("追踪")
+        self._btn_track.setToolTip("对选中永久 ID 重新提取轨迹（点击选择后会自动追踪）")
         self._btn_track.clicked.connect(self._on_track)
         g1l.addWidget(self._btn_track)
+        hint_sel = QLabel("仅可选择会话起始帧中存在的颗粒；选中后自动追踪")
+        hint_sel.setObjectName("secondary")
+        hint_sel.setWordWrap(True)
+        hint_sel.setStyleSheet("color:#86868b;font-size:11px;")
+        g1l.addWidget(hint_sel)
         row_sel = QHBoxLayout()
         self._btn_locate = QPushButton("定位")
         self._btn_locate.setObjectName("secondary")
@@ -335,6 +434,11 @@ class MainViewer(QMainWindow):
         self._btn_traj_path.setToolTip("在颗粒视图中叠加已提取轨迹")
         self._btn_traj_path.toggled.connect(self._toggle_traj_path)
         g1l.addWidget(self._btn_traj_path)
+        self._cb_path_to_current = QCheckBox("路径截止当前帧")
+        self._cb_path_to_current.setChecked(True)
+        self._cb_path_to_current.setToolTip("勾选：只画到当前时间步；取消：画完整选定范围")
+        self._cb_path_to_current.toggled.connect(self._on_path_range_toggled)
+        g1l.addWidget(self._cb_path_to_current)
         rl.addWidget(gb1)
 
         gb2 = QGroupBox("颗粒信息")
@@ -378,9 +482,11 @@ class MainViewer(QMainWindow):
         mb = self.menuBar()
         m_file = mb.addMenu("文件")
         act_open = QAction("打开实验目录…", self)
+        act_open.setShortcut(QKeySequence.Open)
         act_open.triggered.connect(self._browse)
         m_file.addAction(act_open)
         act_save = QAction("保存项目配置…", self)
+        act_save.setShortcut(QKeySequence.Save)
         act_save.triggered.connect(self._save_project)
         m_file.addAction(act_save)
         act_load = QAction("打开项目配置…", self)
@@ -388,6 +494,7 @@ class MainViewer(QMainWindow):
         m_file.addAction(act_load)
         m_file.addSeparator()
         act_quit = QAction("退出", self)
+        act_quit.setShortcut(QKeySequence.Quit)
         act_quit.triggered.connect(self.close)
         m_file.addAction(act_quit)
 
@@ -396,8 +503,34 @@ class MainViewer(QMainWindow):
         act_q.triggered.connect(self._show_quality_report)
         m_data.addAction(act_q)
 
+        m_help = mb.addMenu("帮助")
+        act_about = QAction("关于与快捷键", self)
+        act_about.setShortcut(QKeySequence.HelpContents)
+        act_about.triggered.connect(self._show_about)
+        m_help.addAction(act_about)
+
+    def _setup_shortcuts(self):
+        def sc(key, slot):
+            s = QShortcut(QKeySequence(key), self)
+            s.setContext(Qt.WindowShortcut)
+            s.activated.connect(slot)
+            return s
+
+        sc(Qt.Key_Space, self._play)
+        sc(Qt.Key_Left, self._prev)
+        sc(Qt.Key_Right, self._next)
+        sc(Qt.Key_Home, self._first)
+        sc(Qt.Key_End, self._last)
+        sc("F", self._fit_region)
+        sc("G", self._fit_particles)
+        sc("L", self._locate_selected)
+        sc(Qt.Key_Escape, self._clear_selection)
+
+    def _show_about(self):
+        show_about_dialog(self)
+
     # ── File IO ─────────────────────────────────────────────────────
-    def load_directory(self, path: str):
+    def load_directory(self, path: str, pending: ProjectConfig | None = None):
         # Stop any in-flight activity so directory switch stays predictable
         try:
             if self._play_timer.isActive():
@@ -409,14 +542,22 @@ class MainViewer(QMainWindow):
             pass
         self._traj_progress.setVisible(False)
         self._btn_cancel_traj.setVisible(False)
+        self._pending_project = pending
+        self._play_waiting = False
+        self._frame_load_busy = False
 
-        files = find_dat_files(path)
-        if not files:
+        entries = scan_dat_files(path)
+        if not entries:
+            self._all_entries = []
+            self._frame_entries = []
+            self._frame_files = []
             self._sb.showMessage(f"未找到 DAT 文件: {path}")
             self._sb_label.setText("无数据")
             self._set_controls_enabled(False)
+            self._populate_range_combos([])
             return
-        self._frame_files = files
+
+        self._all_entries = entries
         self._frame_cache.clear()
         self._region_initialized = False
         self._selected_id = None
@@ -428,7 +569,13 @@ class MainViewer(QMainWindow):
         self._current_idx = 0
         self._hidden_groups.clear()
         self._legend.clear()
-        self._clear_traj_path()
+        self._start_frame_ids = None
+        self._reset_trajectory_ui()
+        if HAVE_VISPY:
+            try:
+                self._plot.clear_origin_marker()
+            except Exception:
+                pass
         if hasattr(self, "_btn_traj_path"):
             self._btn_traj_path.blockSignals(True)
             self._btn_traj_path.setChecked(False)
@@ -438,20 +585,139 @@ class MainViewer(QMainWindow):
             self._lbls[k].setText("—")
         for k in self._dlbls:
             self._dlbls[k].setText("—")
-        list_rep = check_file_list(files)
-        self._last_quality_lines = list_rep.summary_lines()
+
         self._dir_input.setText(path)
-        self._sb.showMessage(f"找到 {len(files)} 个 DAT 文件，正在读取起始帧…")
+        n_ini = sum(1 for e in entries if e.is_ini)
+        lead = leading_ini_end_index(entries)
+        ini_msg = (
+            f"前导沉积 _ini 共 {lead + 1} 个，默认起点步 {entries[lead].step}"
+            if lead >= 0
+            else "未检测到前导 _ini，默认从第一帧开始"
+        )
+        self._lbl_ini_hint.setText(ini_msg)
+        self._populate_range_combos(entries, pending=pending)
+
+        # Defaults: last leading ini → last file, stride 1 (or from project)
+        si = default_start_index(entries)
+        ei = default_end_index(entries)
+        stride = 1
+        if pending is not None:
+            if pending.start_step is not None:
+                for i, e in enumerate(entries):
+                    if e.step == int(pending.start_step):
+                        si = i
+                        break
+            if pending.end_step is not None:
+                for i, e in enumerate(entries):
+                    if e.step == int(pending.end_step):
+                        ei = i
+            stride = max(1, int(pending.file_stride or 1))
+            self._sp_stride.blockSignals(True)
+            self._sp_stride.setValue(stride)
+            self._sp_stride.blockSignals(False)
+            self._cmb_start.blockSignals(True)
+            self._cmb_end.blockSignals(True)
+            self._cmb_start.setCurrentIndex(si)
+            self._cmb_end.setCurrentIndex(ei)
+            self._cmb_start.blockSignals(False)
+            self._cmb_end.blockSignals(False)
+
+        self._apply_session_range(si, ei, stride, load=True)
+        list_rep = check_file_list(self._frame_files)
+        self._last_quality_lines = list_rep.summary_lines()
+        self._sb.showMessage(
+            f"找到 {len(entries)} 个 DAT（含 {n_ini} 个 _ini），"
+            f"活动范围 {len(self._frame_files)} 帧 · {ini_msg}"
+        )
         self._sb_label.setText("扫描完成")
+        log.info(
+            "打开目录 %s: total=%d active=%d start=%s end=%s stride=%d",
+            path,
+            len(entries),
+            len(self._frame_files),
+            self._frame_files[0][0] if self._frame_files else None,
+            self._frame_files[-1][0] if self._frame_files else None,
+            stride,
+        )
+
+    def _populate_range_combos(
+        self, entries: list[DatFileEntry], pending: ProjectConfig | None = None
+    ):
+        self._cmb_start.blockSignals(True)
+        self._cmb_end.blockSignals(True)
+        self._cmb_start.clear()
+        self._cmb_end.clear()
+        for e in entries:
+            self._cmb_start.addItem(e.label, e)
+            self._cmb_end.addItem(e.label, e)
+        if entries:
+            si = default_start_index(entries)
+            ei = default_end_index(entries)
+            self._cmb_start.setCurrentIndex(si)
+            self._cmb_end.setCurrentIndex(ei)
+        self._cmb_start.blockSignals(False)
+        self._cmb_end.blockSignals(False)
+
+    def _apply_time_range(self):
+        si = self._cmb_start.currentIndex()
+        ei = self._cmb_end.currentIndex()
+        stride = self._sp_stride.value()
+        err = validate_time_range_indices(si, ei, len(self._all_entries))
+        if err:
+            if "结束" in err:
+                QMessageBox.warning(self, "范围无效", err)
+            else:
+                QMessageBox.information(self, "提示", err)
+            return
+        # Changing range invalidates trajectory zero point
+        self._selected_id = None
+        self._start_frame_ids = None
+        self._reset_trajectory_ui()
+        if HAVE_VISPY:
+            try:
+                self._plot.clear_selection()
+                self._plot.clear_origin_marker()
+                self._plot.render()
+            except Exception:
+                pass
+        self._apply_session_range(si, ei, stride, load=True)
+        self._sb.showMessage(
+            f"已应用时间范围：{self._frame_files[0][0]} → {self._frame_files[-1][0]}，"
+            f"共 {len(self._frame_files)} 帧（间隔 {stride}）。"
+            f"位移零点已重置，请重新选择颗粒并追踪。"
+        )
+        QMessageBox.information(
+            self,
+            "时间范围已更新",
+            "会话时间范围已变更，位移零点以新起始帧为准。\n"
+            "之前的轨迹已清除，请重新选择颗粒（须存在于新的起始帧）。",
+        )
+
+    def _apply_session_range(self, start_i: int, end_i: int, stride: int, load: bool = True):
+        selected = select_range(self._all_entries, start_i, end_i, stride)
+        self._frame_entries = selected
+        self._frame_files = [(e.step, e.path) for e in selected]
+        self._frame_cache.clear()
+        self._current_idx = 0
+        self._current_data = None
+        self._kdtree = None
+        self._start_frame_ids = None
+        if not selected:
+            self._set_controls_enabled(False)
+            return
         self._file_info.setText(
-            f"{len(files)} 文件 | 步 {files[0][0]} → {files[-1][0]}"
+            f"活动 {len(selected)} 帧 | 步 {selected[0].step} → {selected[-1].step}"
+            + (f" · 间隔 {stride}" if stride > 1 else "")
+            + (f" · 起点 {'ini' if selected[0].is_ini else '正式'}")
         )
         self._slider.blockSignals(True)
-        self._slider.setRange(0, max(0, len(files) - 1))
+        self._slider.setRange(0, max(0, len(selected) - 1))
         self._slider.setValue(0)
         self._slider.blockSignals(False)
         self._set_controls_enabled(True)
-        self._load_frame(0, force=True)
+        if load:
+            # First frame needs groups → FULL; later play uses BASIC
+            self._load_frame(0, force=True, mode=ParseMode.FULL_PARTICLE_PROPERTIES)
 
     def _set_controls_enabled(self, enabled: bool):
         """Enable/disable playback & tracking controls based on experiment state."""
@@ -460,7 +726,7 @@ class MainViewer(QMainWindow):
         if hasattr(self, "_slider"):
             self._slider.setEnabled(enabled)
         if hasattr(self, "_btn_track"):
-            self._btn_track.setEnabled(enabled)
+            self._btn_track.setEnabled(enabled and not self._traj_service.is_running)
         if hasattr(self, "_id_input"):
             self._id_input.setEnabled(enabled)
         has_sel = enabled and self._selected_id is not None
@@ -470,6 +736,10 @@ class MainViewer(QMainWindow):
             self._btn_clear_sel.setEnabled(has_sel)
         if hasattr(self, "_btn_traj_path"):
             self._btn_traj_path.setEnabled(enabled and self._trajectory is not None)
+        if hasattr(self, "_cmb_start"):
+            self._cmb_start.setEnabled(bool(self._all_entries))
+            self._cmb_end.setEnabled(bool(self._all_entries))
+            self._sp_stride.setEnabled(bool(self._all_entries))
 
     def _browse(self):
         d = QFileDialog.getExistingDirectory(self, "选择实验目录")
@@ -479,6 +749,20 @@ class MainViewer(QMainWindow):
     def _scan_dir(self):
         self.load_directory(self._dir_input.text())
 
+    def _on_color_mode_changed(self, *_args):
+        if self._rb_cm_group.isChecked():
+            self._color_mode = "group"
+        elif self._rb_cm_solid.isChecked():
+            self._color_mode = "solid"
+        else:
+            self._color_mode = "color_number"
+        self._render()
+
+    def _on_path_range_toggled(self, checked: bool):
+        self._path_to_current = bool(checked)
+        if self._btn_traj_path.isChecked() and self._trajectory:
+            self._draw_traj_path(self._trajectory)
+
     # ── Frame load (async + LRU + debounce + prefetch) ──────────────
     def _on_slider_changed(self, idx: int):
         self._pending_slider_idx = int(idx)
@@ -487,7 +771,7 @@ class MainViewer(QMainWindow):
     def _apply_slider_frame(self):
         self._load_frame(self._pending_slider_idx)
 
-    def _load_frame(self, idx: int, force: bool = False):
+    def _load_frame(self, idx: int, force: bool = False, mode: ParseMode | None = None):
         if not self._frame_files or idx < 0 or idx >= len(self._frame_files):
             return
         if not force and idx == self._current_idx and self._current_data is not None:
@@ -499,13 +783,26 @@ class MainViewer(QMainWindow):
         self._slider.setValue(idx)
         self._slider.blockSignals(False)
 
+        # Prefer FULL if we need groups and cache has full; else BASIC for play
+        use_mode = mode or ParseMode.BASIC_FRAME
+        # First frame of session or legend empty → FULL
+        if self._current_data is None or not self._legend.get_all_groups():
+            use_mode = ParseMode.FULL_PARTICLE_PROPERTIES
+
         cached = self._frame_cache.get(path)
         if cached is not None:
-            self._apply_frame_data(idx, cached)
-            self._prefetch_neighbors(idx)
-            return
+            need_full_reload = False
+            if use_mode is ParseMode.FULL_PARTICLE_PROPERTIES and self._color_mode == "group":
+                gs = getattr(cached, "groups", None)
+                if gs is None or len(gs) == 0:
+                    need_full_reload = True
+                elif cached.count > 0 and len(set(map(str, gs))) == 1 and str(gs[0]) == "***":
+                    need_full_reload = True
+            if not need_full_reload:
+                self._apply_frame_data(idx, cached)
+                self._prefetch_neighbors(idx)
+                return
 
-        # Drop signal handlers of previous worker; request id filters stale results
         if self._load_worker is not None and self._load_worker.isRunning():
             try:
                 self._load_worker.finished.disconnect()
@@ -515,11 +812,12 @@ class MainViewer(QMainWindow):
 
         self._load_req_id += 1
         req = self._load_req_id
-        self._sb.showMessage(f"正在读取起始帧…" if idx == 0 else f"加载第 {idx + 1}/{len(self._frame_files)} 帧…")
-        self._sb_label.setText("加载中…")
-        worker = FrameLoadWorker(
-            path, request_id=req, mode=ParseMode.FULL_PARTICLE_PROPERTIES
+        self._frame_load_busy = True
+        self._sb.showMessage(
+            f"正在读取起始帧…" if idx == 0 else f"加载第 {idx + 1}/{len(self._frame_files)} 帧…"
         )
+        self._sb_label.setText("加载中…")
+        worker = FrameLoadWorker(path, request_id=req, mode=use_mode)
         worker.finished.connect(self._on_frame_loaded)
         worker.error.connect(self._on_frame_error)
         self._load_worker = worker
@@ -535,22 +833,17 @@ class MainViewer(QMainWindow):
             return
         if self._prefetch_worker is not None and self._prefetch_worker.isRunning():
             return
-        # Use negative request ids so they never collide with UI loads
-        self._load_req_id  # keep attribute warm
         req = -(nxt + 1)
-        worker = FrameLoadWorker(
-            path, request_id=req, mode=ParseMode.FULL_PARTICLE_PROPERTIES
-        )
+        mode = getattr(ParseMode, play_parse_mode_name(self._color_mode))
+        worker = FrameLoadWorker(path, request_id=req, mode=mode)
         worker.finished.connect(self._on_prefetch_loaded)
         worker.error.connect(lambda *_: None)
         self._prefetch_worker = worker
         worker.start()
 
     def _on_prefetch_loaded(self, request_id: int, data):
-        # Prefetch only: put into cache, never change current view
         if not self._frame_files:
             return
-        # request_id = -(idx+1)
         if request_id >= 0:
             return
         idx = -request_id - 1
@@ -560,6 +853,7 @@ class MainViewer(QMainWindow):
     def _on_frame_loaded(self, request_id: int, data):
         if request_id != self._load_req_id:
             return  # stale
+        self._frame_load_busy = False
         idx = self._current_idx
         if not self._frame_files or idx >= len(self._frame_files):
             return
@@ -567,13 +861,17 @@ class MainViewer(QMainWindow):
         self._frame_cache.put(path, data)
         self._apply_frame_data(idx, data)
         self._prefetch_neighbors(idx)
+        # Resume autoplay if we were waiting for this frame
+        if self._play_waiting and self._play_timer.isActive():
+            self._play_waiting = False
 
     def _on_frame_error(self, request_id: int, msg: str):
         if request_id != self._load_req_id:
             return
+        self._frame_load_busy = False
+        self._play_waiting = False
         self._sb.showMessage(f"加载失败: {msg}")
         self._sb_label.setText("错误")
-        # stop autoplay on hard failure
         if self._play_timer.isActive():
             self._play_timer.stop()
             if hasattr(self, "_btn_play"):
@@ -581,15 +879,26 @@ class MainViewer(QMainWindow):
 
     def _apply_frame_data(self, idx: int, data):
         self._current_data = data
+        self._frame_load_busy = False
+        # Session start frame defines the selectable permanent-ID set
+        if idx == 0 and data is not None and data.count > 0:
+            self._start_frame_ids = set(int(i) for i in data.ids.tolist())
         step_name = self._frame_files[idx][0] if self._frame_files else 0
+        is_ini = False
+        if 0 <= idx < len(self._frame_entries):
+            is_ini = self._frame_entries[idx].is_ini
+        tag = " · ini" if is_ini else ""
         self._file_info.setText(
-            f"时间步 {data.current_step} | 颗粒 {data.count} | 文件步 {step_name}"
+            f"时间步 {data.current_step}{tag} | 颗粒 {data.count} | "
+            f"{idx + 1}/{len(self._frame_files)} · 文件步 {step_name}"
         )
         if self._experiment_region is None or not self._region_user_locked:
             self._detect_and_fill_region(data)
         self._build_kdtree()
         self._refresh_legend(data)
         self._render()
+        if self._btn_traj_path.isChecked() and self._trajectory:
+            self._draw_traj_path(self._trajectory)
         wall_reg = None
         meta_reg = None
         if self._experiment_region:
@@ -617,6 +926,8 @@ class MainViewer(QMainWindow):
         if self._selected_id is not None:
             self._refresh_selected_info()
         self._set_controls_enabled(True)
+        # Apply deferred project settings once first frame is ready
+        self._apply_pending_project_if_any()
 
     # ── Region ──────────────────────────────────────────────────────
     def _detect_and_fill_region(self, d, force=False):
@@ -764,6 +1075,13 @@ class MainViewer(QMainWindow):
             self._legend.set_group_visible(g, True)
         self._render()
 
+    def _on_group_color_changed(self, group_name: str, color: QColor):
+        """Persist legend color pick into ColorMapping (project config)."""
+        packed = (color.red() << 16) | (color.green() << 8) | color.blue()
+        self._color_map.set_color(str(group_name), packed)
+        self._render()
+        self._sb.showMessage(f"已更新 Group「{group_name}」颜色（保存项目配置后可持久化）")
+
     def _on_show_selected_group(self):
         d = self._current_data
         if d is None or self._selected_id is None:
@@ -780,10 +1098,19 @@ class MainViewer(QMainWindow):
         n = d.count
         mask = np.ones(n, dtype=bool)
         if self._hidden_groups and len(d.groups) == n:
-            for i, g in enumerate(d.groups):
-                if str(g) in self._hidden_groups:
-                    mask[i] = False
+            g_arr = np.asarray([str(g) for g in d.groups], dtype=object)
+            hidden = list(self._hidden_groups)
+            mask = ~np.isin(g_arr, hidden)
         return mask
+
+    def _particle_rgba(self, d, mask) -> np.ndarray:
+        n_vis = int(mask.sum()) if mask is not None else d.count
+        if self._color_mode == "group" and len(d.groups) == d.count:
+            return groups_to_rgba(d.groups[mask], self._color_map)
+        if self._color_mode == "solid":
+            return solid_rgba(n_vis)
+        cols = d.colors[mask] if len(d.colors) == d.count else np.zeros(n_vis, dtype=np.int32)
+        return color_numbers_to_rgba(cols)
 
     def _render(self):
         d = self._current_data
@@ -794,8 +1121,7 @@ class MainViewer(QMainWindow):
         xs = d.xs[mask]
         ys = d.ys[mask]
         rads = d.rads[mask]
-        cols = d.colors[mask] if len(d.colors) == d.count else np.zeros(len(xs), dtype=np.int32)
-        rgba = color_numbers_to_rgba(cols)
+        rgba = self._particle_rgba(d, mask)
 
         if HAVE_VISPY:
             if not self._region_initialized:
@@ -804,16 +1130,13 @@ class MainViewer(QMainWindow):
                 self._region_initialized = True
 
             enhanced_flag = self._rb_enh.isChecked()
-            # Soft min size for enhanced: scale rads in display only
             draw_rads = rads
             if enhanced_flag and len(rads):
-                # approximate min radius in data units from current view span
                 rect = None
                 if hasattr(self._plot, "get_view_rect"):
                     rect = self._plot.get_view_rect()
                 if rect is not None:
                     span = max(rect[1] - rect[0], rect[3] - rect[2], 1.0)
-                    # ~2px on a 1000px canvas → span * 0.002
                     min_r = span * 0.001
                     draw_rads = np.maximum(rads, min_r)
 
@@ -828,11 +1151,30 @@ class MainViewer(QMainWindow):
                 sm = d.ids == self._selected_id
                 if sm.any():
                     i = int(sm.argmax())
-                    self._plot.set_selection(float(d.xs[i]), float(d.ys[i]), float(d.rads[i]))
+                    self._plot.set_selection(
+                        float(d.xs[i]),
+                        float(d.ys[i]),
+                        float(d.rads[i]),
+                        particle_id=self._selected_id,
+                    )
                 else:
                     self._plot.clear_selection()
             else:
                 self._plot.clear_selection()
+
+            # Origin marker from trajectory zero point
+            if self._trajectory:
+                for p in self._trajectory:
+                    if p.status in ("normal", "present") and not (
+                        isinstance(p.x_km, float) and np.isnan(p.x_km)
+                    ):
+                        self._plot.set_origin_marker(p.x_km, p.y_km, p.radius_km or 60.0)
+                        break
+            else:
+                try:
+                    self._plot.clear_origin_marker()
+                except Exception:
+                    pass
             self._plot.render()
         else:
             if not self._region_initialized:
@@ -861,36 +1203,61 @@ class MainViewer(QMainWindow):
             )
 
     # ── Selection ───────────────────────────────────────────────────
+    def _id_in_start_frame(self, pid: int) -> bool:
+        return id_allowed_at_session_start(self._start_frame_ids, pid)
+
+    def _reset_trajectory_ui(self):
+        """Clear trajectory data + path + curves + table (not the selected id)."""
+        try:
+            if self._traj_service.is_running:
+                self._traj_service.cancel()
+        except Exception:
+            pass
+        self._trajectory = None
+        self._clear_traj_path()
+        if hasattr(self, "_btn_traj_path"):
+            self._btn_traj_path.blockSignals(True)
+            self._btn_traj_path.setChecked(False)
+            self._btn_traj_path.setText("显示路径")
+            self._btn_traj_path.blockSignals(False)
+        self._clear_plots_and_table()
+        for k in self._dlbls:
+            self._dlbls[k].setText("—")
+        if HAVE_VISPY:
+            try:
+                self._plot.clear_origin_marker()
+            except Exception:
+                pass
+
+    def _clear_plots_and_table(self):
+        for key in ("dx", "dy", "dt", "pl", "v", "vx", "vy"):
+            w = getattr(self, f"_plot_{key}", None)
+            if w is not None and hasattr(w, "clear"):
+                try:
+                    w.clear()
+                except Exception:
+                    pass
+        if hasattr(self, "_tbl"):
+            self._tbl.setRowCount(0)
+
     def _pick_particle_at(self, x: float, y: float) -> int | None:
-        """Return permanent id near (x,y), preferring hits inside particle radius."""
-        if self._kdtree is None or self._current_data is None:
+        """Return permanent id near (x,y), preferring hits inside particle radius.
+
+        Only IDs present in the *session start* frame are selectable.
+        """
+        if self._current_data is None:
             return None
         d = self._current_data
-        # Query a few nearest candidates
-        k = min(8, d.count)
-        dists, idxs = self._kdtree.query(np.array([[x, y]]), k=k)
-        dists = np.atleast_1d(np.asarray(dists).ravel())
-        idxs = np.atleast_1d(np.asarray(idxs).ravel())
-        best_i = None
-        best_dist = None
-        for dist, i in zip(dists, idxs):
-            i = int(i)
-            if i < 0 or i >= d.count:
-                continue
-            rad = float(d.rads[i])
-            # Prefer particles whose disc covers the click
-            if dist <= max(rad, 1e-9):
-                if best_dist is None or dist < best_dist:
-                    best_i, best_dist = i, float(dist)
-        if best_i is None:
-            # Fall back to nearest if within a soft max pick radius
-            i0 = int(idxs[0])
-            soft = float(np.median(d.rads)) * 3.0 if d.count else 100.0
-            if float(dists[0]) <= soft and 0 <= i0 < d.count:
-                best_i = i0
-        if best_i is None:
-            return None
-        return int(d.ids[best_i])
+        return pick_particle_id(
+            d.xs,
+            d.ys,
+            d.rads,
+            d.ids,
+            float(x),
+            float(y),
+            start_ids=self._start_frame_ids,
+            tree=self._kdtree,
+        )
 
     def _on_click(self, event):
         if self._kdtree is None or self._current_data is None:
@@ -903,32 +1270,56 @@ class MainViewer(QMainWindow):
         pid = self._pick_particle_at(float(dp.x()), float(dp.y()))
         if pid is not None:
             self._select_particle(pid)
+        else:
+            self._sb.showMessage("未选中：请点击起始帧中存在的颗粒（空白处不取消选择）")
 
     def _on_vispy_click(self, x, y):
         pid = self._pick_particle_at(float(x), float(y))
         if pid is not None:
             self._select_particle(pid)
+        else:
+            self._sb.showMessage("未选中：仅可选择会话起始帧中存在的永久 ID")
 
-    def _select_particle(self, pid: int):
-        self._selected_id = int(pid)
+    def _select_particle(self, pid: int, auto_track: bool | None = None):
+        pid = int(pid)
+        if self._start_frame_ids is None:
+            QMessageBox.information(self, "请稍候", "起始帧尚未就绪，请等待加载完成后再选择。")
+            return
+        if not self._id_in_start_frame(pid):
+            QMessageBox.warning(
+                self,
+                "不可选择",
+                f"永久 ID {pid} 不在会话起始帧中。\n"
+                "位移零点为起始帧，只能追踪起始帧存在的颗粒。",
+            )
+            self._sb.showMessage(f"ID {pid} 不在起始帧，已拒绝选择")
+            return
+        prev = self._selected_id
+        self._selected_id = pid
         self._id_input.setText(str(pid))
         self._refresh_selected_info()
         self._render()
         self._set_controls_enabled(bool(self._frame_files))
         self._sb.showMessage(f"已选中永久 ID {pid}")
+        do_auto = self._auto_track_on_select if auto_track is None else bool(auto_track)
+        # Auto-track on new selection (or re-select after clear)
+        if do_auto and (prev != pid or self._trajectory is None):
+            self._start_trajectory(pid)
 
     def _clear_selection(self):
         self._selected_id = None
-        # Keep id text so user can re-track, but clear visual selection
+        self._reset_trajectory_ui()
         for k in self._lbls:
             self._lbls[k].setText("—")
-        for k in self._dlbls:
-            self._dlbls[k].setText("—")
         if HAVE_VISPY:
             self._plot.clear_selection()
+            try:
+                self._plot.clear_origin_marker()
+            except Exception:
+                pass
             self._plot.render()
         self._set_controls_enabled(bool(self._frame_files))
-        self._sb.showMessage("已清除选择")
+        self._sb.showMessage("已清除选择与轨迹")
 
     def _locate_selected(self):
         d = self._current_data
@@ -937,7 +1328,7 @@ class MainViewer(QMainWindow):
             return
         mask = d.ids == self._selected_id
         if not mask.any():
-            self._sb.showMessage("当前帧不存在该颗粒")
+            self._sb.showMessage("当前帧不存在该颗粒（可能已剥蚀）")
             return
         i = int(mask.argmax())
         x, y, r = float(d.xs[i]), float(d.ys[i]), float(d.rads[i])
@@ -946,7 +1337,7 @@ class MainViewer(QMainWindow):
         ymin, ymax = y - half, y + half
         if HAVE_VISPY:
             self._plot.set_region(xmin, xmax, ymin, ymax)
-            self._plot.set_selection(x, y, r)
+            self._plot.set_selection(x, y, r, particle_id=self._selected_id)
             self._plot.render()
         else:
             self._plot.getViewBox().setRange(xRange=(xmin, xmax), yRange=(ymin, ymax))
@@ -1004,11 +1395,25 @@ class MainViewer(QMainWindow):
         except ValueError:
             QMessageBox.warning(self, "提示", "请输入整数永久 ID（不是 index）")
             return
-        d = self._current_data
-        if d is None or not np.any(d.ids == pid):
-            QMessageBox.warning(self, "提示", f"当前帧中未找到永久 ID {pid}")
+        if self._start_frame_ids is None:
+            QMessageBox.information(self, "请稍候", "起始帧尚未就绪")
             return
-        self._select_particle(pid)
+        if not self._id_in_start_frame(pid):
+            QMessageBox.warning(
+                self,
+                "不可追踪",
+                f"永久 ID {pid} 不在会话起始帧中，无法作为位移零点。",
+            )
+            return
+        # Select without nested auto-track, then start extraction
+        self._select_particle(pid, auto_track=False)
+        self._start_trajectory(pid)
+
+    def _start_trajectory(self, pid: int):
+        if not self._frame_files:
+            return
+        if self._traj_service.is_running:
+            self._traj_service.cancel()
         finfos = [
             FileInfo(
                 file_order=i,
@@ -1075,13 +1480,9 @@ class MainViewer(QMainWindow):
         self._update_table(traj)
         last = None
         for p in reversed(traj or []):
-            if p.status in ("normal", "present") and not (
-                isinstance(p.x_km, float) and np.isnan(p.x_km)
-            ):
+            if p.status in ("normal", "present"):
                 last = p
                 break
-        if last is None and traj:
-            last = traj[-1]
         if last is not None:
             self._dlbls["ΔX:"].setText(f"{last.displacement_x_km:.2f}")
             self._dlbls["ΔY:"].setText(f"{last.displacement_y_km:.2f}")
@@ -1091,10 +1492,17 @@ class MainViewer(QMainWindow):
             self._dlbls["Vy:"].setText(f"{last.velocity_y:.6g} /step")
             self._dlbls["|v|:"].setText(f"{last.velocity_total:.6g} /step")
             self._dlbls["Δstep:"].setText(f"{last.delta_step:.0f}")
-        if self._btn_traj_path.isChecked():
+        # Auto-show path when trajectory ready
+        if n_ok and hasattr(self, "_btn_traj_path"):
+            self._btn_traj_path.blockSignals(True)
+            self._btn_traj_path.setChecked(True)
+            self._btn_traj_path.setText("隐藏路径")
+            self._btn_traj_path.blockSignals(False)
             self._draw_traj_path(traj)
+        elif self._btn_traj_path.isChecked():
+            self._draw_traj_path(traj)
+        self._render()
         self._set_controls_enabled(bool(self._frame_files))
-        # Jump to trajectory tab for immediate feedback
         if n_ok:
             self._tabs.setCurrentWidget(self._plot_dt)
 
@@ -1196,18 +1604,14 @@ class MainViewer(QMainWindow):
 
     def _draw_traj_path(self, traj):
         self._clear_traj_path()
-        xs = [
-            p.x_km
-            for p in traj
-            if p.status in ("normal", "present")
-            and not (isinstance(p.x_km, float) and np.isnan(p.x_km))
-        ]
-        ys = [
-            p.y_km
-            for p in traj
-            if p.status in ("normal", "present")
-            and not (isinstance(p.y_km, float) and np.isnan(p.y_km))
-        ]
+        cur_step = None
+        if self._current_data is not None:
+            cur_step = int(self._current_data.current_step)
+        xs, ys = filter_trajectory_path_xy(
+            traj or [],
+            path_to_current=self._path_to_current,
+            current_step=cur_step,
+        )
         if len(xs) < 2:
             return
         if HAVE_VISPY:
@@ -1300,26 +1704,35 @@ class MainViewer(QMainWindow):
         if not self._frame_files:
             self._play_timer.stop()
             return
-        if self._current_idx >= len(self._frame_files) - 1:
+        if self._frame_load_busy:
+            # Wait until current frame finishes; don't pile up loads
+            self._play_waiting = True
+            return
+        nxt = next_play_index(self._current_idx, len(self._frame_files))
+        if nxt is None:
             self._play_timer.stop()
             if hasattr(self, "_btn_play"):
                 self._btn_play.setText("▶/⏸")
             self._sb.showMessage("已播放到最后一帧")
             return
-        self._load_frame(self._current_idx + 1)
+        self._play_waiting = True
+        mode_name = play_parse_mode_name(self._color_mode)
+        play_mode = getattr(ParseMode, mode_name)
+        self._load_frame(nxt, mode=play_mode)
 
     def _play(self):
         if not self._frame_files:
             return
         if self._play_timer.isActive():
             self._play_timer.stop()
+            self._play_waiting = False
             if hasattr(self, "_btn_play"):
                 self._btn_play.setText("▶/⏸")
             self._sb.showMessage("已暂停")
         else:
-            # If at end, restart from first
             if self._current_idx >= len(self._frame_files) - 1:
                 self._load_frame(0, force=True)
+            self._play_waiting = False
             self._play_timer.start(int(self._spd.currentText()))
             if hasattr(self, "_btn_play"):
                 self._btn_play.setText("⏸")
@@ -1361,14 +1774,14 @@ class MainViewer(QMainWindow):
             experiment_dir=self._dir_input.text(),
             start_step=start,
             end_step=end,
-            file_stride=1,
+            file_stride=int(self._sp_stride.value()) if hasattr(self, "_sp_stride") else 1,
             region=region,
             region_source=src,
             region_user_locked=self._region_user_locked,
             group_colors=self._color_map.to_dict(),
             display_mode="enhanced" if self._rb_enh.isChecked() else "real",
             show_walls=self._wall_cb.isChecked(),
-            color_mode="color_number",
+            color_mode=self._color_mode,
             selected_particle_id=self._selected_id,
         )
 
@@ -1412,7 +1825,18 @@ class MainViewer(QMainWindow):
                 f"配置中的实验目录不存在:\n{cfg.experiment_dir}\n请重新选择。",
             )
             return
-        self.load_directory(cfg.experiment_dir)
+        # Defer region/selection until first frame loads
+        self.load_directory(cfg.experiment_dir, pending=cfg)
+        self._sb.showMessage(f"已打开项目配置: {path}（等待首帧…）")
+
+    def _apply_pending_project_if_any(self):
+        cfg = self._pending_project
+        if cfg is None:
+            return
+        # Only apply once first data is ready
+        if self._current_data is None:
+            return
+        self._pending_project = None
         if cfg.region is not None:
             self._set_experiment_region(
                 *cfg.region,
@@ -1425,9 +1849,27 @@ class MainViewer(QMainWindow):
             self._rb_enh.setChecked(True)
         else:
             self._rb_real.setChecked(True)
+        mode = (cfg.color_mode or "color_number").lower()
+        if mode in ("group", "by_group"):
+            self._rb_cm_group.setChecked(True)
+            self._color_mode = "group"
+        elif mode in ("solid", "single"):
+            self._rb_cm_solid.setChecked(True)
+            self._color_mode = "solid"
+        else:
+            self._rb_cm_color.setChecked(True)
+            self._color_mode = "color_number"
         if cfg.group_colors:
             self._color_map.from_dict(cfg.group_colors)
-        if cfg.selected_particle_id is not None and self._current_data is not None:
-            if np.any(self._current_data.ids == int(cfg.selected_particle_id)):
-                self._select_particle(int(cfg.selected_particle_id))
-        self._sb.showMessage(f"已打开项目配置: {path}")
+            for g, packed in self._color_map.to_dict().items():
+                c = QColor((packed >> 16) & 0xFF, (packed >> 8) & 0xFF, packed & 0xFF)
+                if hasattr(self._legend, "set_group_color"):
+                    self._legend.set_group_color(g, c)
+        if cfg.selected_particle_id is not None:
+            pid = int(cfg.selected_particle_id)
+            if self._id_in_start_frame(pid):
+                self._select_particle(pid, auto_track=True)
+            else:
+                self._sb.showMessage(f"配置中的颗粒 ID {pid} 在起始帧不存在")
+        self._render()
+        self._sb.showMessage(f"已恢复项目配置: {self._project_path or ''}")

@@ -4,8 +4,10 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
+    QColorDialog,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QSizePolicy,
     QVBoxLayout,
@@ -84,7 +86,16 @@ class GroupItem(QWidget):
 
     def set_color(self, color: QColor):
         self._color = color
-        self._swatch.setPixmap(QPixmap())
+        size = self._swatch.width() or 14
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setBrush(color)
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(0, 0, size, size, 3, 3)
+        painter.end()
+        self._swatch.setPixmap(pixmap)
 
 
 class GroupLegendPanel(QWidget):
@@ -95,12 +106,14 @@ class GroupLegendPanel(QWidget):
         isolate_group(group_name): emitted on double-click to isolate a group
         show_all_groups(): emitted when "Show All" is clicked
         show_selected_group(): emitted when "Show Selected Group" is clicked
+        color_changed(group_name, QColor): user picked a new color (right-click / 改色)
     """
 
     visibility_changed = Signal(str, bool)
     isolate_group = Signal(str)
     show_all_groups = Signal()
     show_selected_group = Signal()
+    color_changed = Signal(str, QColor)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -120,6 +133,12 @@ class GroupLegendPanel(QWidget):
         title.setStyleSheet("font-size: 15px; font-weight: 700; color: #1d1d1f; padding-bottom: 4px;")
         layout.addWidget(title)
 
+        hint = QLabel("双击仅显示该组 · 右键改颜色")
+        hint.setObjectName("secondary")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #86868b; font-size: 11px;")
+        layout.addWidget(hint)
+
         # Group list container
         self._group_container = QVBoxLayout()
         self._group_container.setSpacing(2)
@@ -132,10 +151,12 @@ class GroupLegendPanel(QWidget):
         btn_layout.setSpacing(4)
 
         self._show_all_btn = QPushButton("显示全部")
+        self._show_all_btn.setObjectName("secondary")
         self._show_all_btn.clicked.connect(self.show_all_groups.emit)
         btn_layout.addWidget(self._show_all_btn)
 
         self._show_selected_btn = QPushButton("显示所选组")
+        self._show_selected_btn.setObjectName("secondary")
         self._show_selected_btn.clicked.connect(self.show_selected_group.emit)
         btn_layout.addWidget(self._show_selected_btn)
 
@@ -146,6 +167,23 @@ class GroupLegendPanel(QWidget):
 
     def _on_item_double_clicked(self, group_name: str):
         self.isolate_group.emit(group_name)
+
+    def _on_item_context_menu(self, group_name: str, pos):
+        item = self._group_items.get(group_name)
+        if item is None:
+            return
+        menu = QMenu(self)
+        act_color = menu.addAction("修改颜色…")
+        act_iso = menu.addAction("仅显示此组")
+        chosen = menu.exec(item.mapToGlobal(pos))
+        if chosen is act_color:
+            cur = item._color if hasattr(item, "_color") else QColor(128, 128, 128)
+            c = QColorDialog.getColor(cur, self, f"Group 颜色 — {group_name}")
+            if c.isValid():
+                item.set_color(c)
+                self.color_changed.emit(group_name, c)
+        elif chosen is act_iso:
+            self.isolate_group.emit(group_name)
 
     # --- Public API ---
 
@@ -158,9 +196,18 @@ class GroupLegendPanel(QWidget):
             lambda checked, g=group_name: self._on_checkbox_toggled(g, checked)
         )
         item.mouseDoubleClickEvent = lambda event, g=group_name: self._on_item_double_clicked(g)
+        item.setContextMenuPolicy(Qt.CustomContextMenu)
+        item.customContextMenuRequested.connect(
+            lambda pos, g=group_name: self._on_item_context_menu(g, pos)
+        )
 
         self._group_items[group_name] = item
         self._group_container.addWidget(item)
+
+    def set_group_color(self, group_name: str, color: QColor):
+        item = self._group_items.get(group_name)
+        if item is not None:
+            item.set_color(color)
 
     def remove_group(self, group_name: str):
         """Remove a group from the legend."""
