@@ -74,6 +74,8 @@ uv run python -m zdem_particle_tracker
 - **清除选择**（Esc）会同时清除轨迹、路径、曲线与数据表
 - 修改时间范围后会提示零点重置并清除旧轨迹
 
+选择/播放等纯逻辑在 `widgets/selection_logic.py`，便于无 GUI 单测。
+
 ## 快捷键
 
 | 键 | 作用 |
