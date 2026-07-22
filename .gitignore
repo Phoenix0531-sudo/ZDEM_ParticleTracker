@@ -7,7 +7,6 @@ build/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-*.png
 debug_*.png
 test_markers.png
 .DS_Store
@@ -18,5 +17,11 @@ test_markers.png
 
 
 # portfolio evidence (override global *.png)
+!docs/screenshots/
+!docs/screenshots/**
+
+# allow portfolio screenshots
+*.png
+!docs/
 !docs/screenshots/
 !docs/screenshots/**
