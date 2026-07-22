@@ -16,3 +16,7 @@ test_markers.png
 
 .git.broken.bak/
 
+
+# portfolio evidence (override global *.png)
+!docs/screenshots/
+!docs/screenshots/**
