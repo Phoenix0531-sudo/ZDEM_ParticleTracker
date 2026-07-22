@@ -94,11 +94,16 @@ class RegionDetector:
 
         Expects keys ``left``, ``right``, ``bottom``, ``height`` (or ``top``).
 
-        ``height`` may be either the **top Y** (if height > bottom and looks
-        like an absolute coordinate) or a **delta height**.  When
-        ``height > bottom`` and ``height`` is on the same order as
-        ``right - left`` span, treat it as top Y; otherwise as delta.
-        Sample data often has bottom=0 and height=top, so both agree.
+        Semantics for ``height`` (ZDEM samples vary):
+        - If ``height > bottom`` **and** treating height as *delta* would make
+          ``y_max = bottom + height`` larger than a reasonable absolute top
+          when bottom is near 0 and height itself looks like a top coordinate
+          (common: bottom=0, height=50160 meaning top), use absolute top.
+        - Heuristic: when ``bottom ≈ 0`` and ``height`` is much larger than a
+          tiny epsilon, prefer **absolute top** only if ``height`` is also
+          comparable to the X span (order-of-magnitude box). Otherwise treat
+          as delta so unit tests / short boxes stay correct.
+        - Default / safe: **delta** → ``y_max = bottom + height``.
         """
         left = float(metadata.get("left", 0.0))
         right = float(metadata.get("right", 0.0))
@@ -108,15 +113,19 @@ class RegionDetector:
         if right - left < self._COLINEAR_TOL:
             right = left + 1.0
 
-        # height field semantics: top absolute vs delta
+        x_span = max(right - left, self._COLINEAR_TOL)
+        # Absolute top: bottom near 0, height_raw looks like a top coordinate
+        # of similar magnitude to x_span (full experimental domain).
+        use_absolute = (
+            height_raw > bottom
+            and abs(bottom) <= self._COLINEAR_TOL * 10
+            and height_raw >= x_span * 0.2
+            and height_raw <= x_span * 5.0
+        )
         if height_raw <= self._COLINEAR_TOL:
             y_max = bottom + 1.0
             mode = "delta-fallback"
-        elif height_raw > bottom and height_raw > (right - left) * 0.05:
-            # likely absolute top (e.g. bottom=0, height=50160)
-            # If treating as delta would make y_max >> right span * 2, still OK for tall boxes.
-            # Prefer: if height_raw > bottom, y_max = height_raw when (height_raw - bottom)
-            # is a sensible box height.
+        elif use_absolute:
             y_max = height_raw
             mode = "absolute-top"
         else:

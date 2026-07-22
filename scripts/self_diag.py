@@ -113,10 +113,14 @@ def main():
     note(f"probe particle id={pid} group={start_pd.groups[0]} xy=({start_pd.xs[0]:.2f},{start_pd.ys[0]:.2f})")
 
     # region
-    reg = RegionDetector().detect(start_pd)
-    note(f"region detect: {reg}")
-    if reg is None:
-        note("region detection returned None", "WARN")
+    det = RegionDetector()
+    meta = dict(left=start_pd.left, right=start_pd.right, bottom=start_pd.bottom, height=start_pd.height)
+    reg_w = det.detect_from_walls(start_pd.wall_data, meta)
+    reg_m = det.detect_from_metadata(meta)
+    note(f"region walls: {reg_w}")
+    note(f"region meta: {reg_m}")
+    if reg_w is None:
+        note("region walls returned None", "WARN")
 
     # quality
     fl = check_file_list([(e.step, e.path) for e in selected[:5]])
