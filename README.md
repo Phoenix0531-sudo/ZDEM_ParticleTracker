@@ -1,44 +1,46 @@
 # ZDEM Particle Tracker
 
-**High-performance 2D particle tracking with VisPy true-radius rendering**
+**High-performance 2D particle tracking for ZDEM dumps — true-radius VisPy mesh rendering.**
 
 [English](README.md) | [中文](README.zh-CN.md)
 
-![CI](https://github.com/Phoenix0531-sudo/ZDEM_ParticleTracker/actions/workflows/ci.yml/badge.svg)
-![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+[![CI](https://github.com/Phoenix0531-sudo/ZDEM_ParticleTracker/actions/workflows/ci.yml/badge.svg)](https://github.com/Phoenix0531-sudo/ZDEM_ParticleTracker/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 
-Desktop viewer and **single-particle trajectory tracker** for 2D **ZDEM** discrete-element dumps on Windows / Python.
+High-performance 2D particle tracking for ZDEM dumps — true-radius VisPy mesh rendering.
 
-Research workflow tool — not a generic DEM GUI. It understands `all_*.dat` / `all_*_ini.dat`, permanent particle IDs, **color#** groups, wall columns (P1/P2), and deposition (`_ini`) framing.
+Interactive IDs. Region locks. Honest geometry.
 
-## Why this exists
-
-Salt-tectonics / orogenic DEM campaigns need interactive ID picking, region locks, and honest radius rendering. Marker-based GL points create white halos and zoom voids; this app prefers **VisPy mesh discs at true 2×radius**, with pyqtgraph fallback for headless CI.
 
 ## Features
 
-- VisPy mesh rendering (true radius); `ZDEM_FORCE_PYQTGRAPH=1` forces CPU path
-- Region bounds: user lock > walls > metadata (never auto-crop only to particle Y bbox as permanent policy)
-- Trajectory tracking with cancelable workers + progress
-- Rotating logs / parse timings / self-diagnostics
-- Hard CI: Qt widget construction via **isolated subprocess** on Linux
+- 🎯 Click-to-fill permanent particle IDs (no silent empty plots)
+- 🟣 VisPy **mesh discs at true 2×radius** (not halo-prone GL points)
+- 🗺️ Experiment region = user lock > walls > metadata (never permanent auto-crop to Y-bbox)
+- 📈 Trajectory tracking with cancelable workers + progress
+- 🧪 Hard CI: Qt widget construction via isolated subprocess on Linux
+- 🧩 Side-panel extraction + pure viewer logic for maintainability
 
-## Install
+## Get started
+
+### Install
 
 ```bash
 git clone https://github.com/Phoenix0531-sudo/ZDEM_ParticleTracker.git
 cd ZDEM_ParticleTracker
 pip install -r requirements.txt
-# VisPy + PySide6 + numpy/scipy recommended
+# recommended: VisPy + PySide6 + numpy/scipy
+# or: uv sync
 ```
 
-## Usage
+### Usage
 
 ```bash
 python main.py
 ```
 
-Headless-friendly env for tests:
+Headless tests:
 
 ```bash
 set QT_QPA_PLATFORM=offscreen
@@ -53,9 +55,9 @@ main.py
 zdem_particle_tracker/
   widgets/main_viewer.py
   ui/side_panels.py
-  selection_logic.py viewer_logic.py
+  selection_logic.py  viewer_logic.py
   rendering/
-tests/qt_subprocess.py
+tests/
 ```
 
 ## Related ZDEM tools
@@ -71,6 +73,11 @@ tests/qt_subprocess.py
 | [ZDEM_Model_Editor](https://github.com/Phoenix0531-sudo/ZDEM_Model_Editor) | Model file visual editor |
 | [ZDEM_Archiver](https://github.com/Phoenix0531-sudo/ZDEM_Archiver) | Purge / archive bulky simulation dumps |
 | [ZDEM3D_WEB](https://github.com/Phoenix0531-sudo/ZDEM3D_WEB) | CAE cloud UI (Django + React + VTK.js) |
+
+## Notes
+
+Research workflow tool for salt-tectonics / orogenic DEM campaigns — not a generic multi-physics GUI.
+
 ## License
 
-MIT. Free for commercial use with attribution. See [LICENSE](LICENSE).
+MIT. Free for commercial use with attribution where applicable. See [LICENSE](LICENSE).
