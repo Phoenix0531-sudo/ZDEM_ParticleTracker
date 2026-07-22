@@ -142,6 +142,15 @@ class _TrajectoryWorker(QThread):
                     if self._cancelled:
                         for f in futures:
                             f.cancel()
+                        log.info(
+                            "trajectory cancelled during scan id=%s ready=%d/%d t=%.2fs",
+                            self._particle_id,
+                            contiguous,
+                            total,
+                            time.perf_counter() - t0,
+                        )
+                        # Always emit finished so UI can leave "extracting" state
+                        self.finished.emit([])
                         return
                     idx, status, hit = fut.result()
                     results[idx] = (status, hit)
@@ -149,8 +158,16 @@ class _TrajectoryWorker(QThread):
                         done_flags[idx] = True
                     while contiguous < total and done_flags[contiguous]:
                         contiguous += 1
-                    # Contiguous prefix = "frames 0..k-1 ready" (time order)
                     self.progress.emit(contiguous, total)
+
+            if self._cancelled:
+                log.info(
+                    "trajectory cancelled after scan id=%s t=%.2fs",
+                    self._particle_id,
+                    time.perf_counter() - t0,
+                )
+                self.finished.emit([])
+                return
 
             trajectory: Trajectory = []
             first_x: Optional[float] = None
@@ -163,6 +180,13 @@ class _TrajectoryWorker(QThread):
 
             for idx, finfo in enumerate(self._files):
                 if self._cancelled:
+                    log.info(
+                        "trajectory cancelled during assemble id=%s at=%d t=%.2fs",
+                        self._particle_id,
+                        idx,
+                        time.perf_counter() - t0,
+                    )
+                    self.finished.emit(trajectory)
                     return
                 if eroded:
                     trajectory.append(
@@ -204,7 +228,11 @@ class _TrajectoryWorker(QThread):
                         TrajectoryPoint(
                             particle_id=self._particle_id,
                             file_index=idx,
-                            time_step=int(hit.current_step or getattr(finfo, "current_step", 0) or 0),
+                            time_step=int(
+                                hit.current_step
+                                or getattr(finfo, "current_step", 0)
+                                or 0
+                            ),
                             x_km=math.nan,
                             y_km=math.nan,
                             radius_km=0.0,

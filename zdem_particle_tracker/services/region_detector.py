@@ -6,7 +6,10 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
+from ..utils.logging_utils import get_logger
 from . import Region
+
+log = get_logger("services.region")
 
 
 class RegionDetector:
@@ -68,37 +71,79 @@ class RegionDetector:
         if x_max - x_min < self._COLINEAR_TOL or y_max - y_min < self._COLINEAR_TOL:
             return self._fallback_region(metadata, "walls-collinear")
 
-        return Region(
+        reg = Region(
             x_min=float(x_min),
             x_max=float(x_max),
             y_min=float(y_min),
             y_max=float(y_max),
             source="walls",
         )
+        log.debug(
+            "detect_from_walls n=%s -> X[%.1f,%.1f] Y[%.1f,%.1f]",
+            walls.shape[0],
+            reg.x_min,
+            reg.x_max,
+            reg.y_min,
+            reg.y_max,
+        )
+        return reg
 
     # -----------------------------------------------------------------
     def detect_from_metadata(self, metadata: Dict[str, Any]) -> Region:
         """Construct a region from frame metadata.
 
         Expects keys ``left``, ``right``, ``bottom``, ``height`` (or ``top``).
+
+        ``height`` may be either the **top Y** (if height > bottom and looks
+        like an absolute coordinate) or a **delta height**.  When
+        ``height > bottom`` and ``height`` is on the same order as
+        ``right - left`` span, treat it as top Y; otherwise as delta.
+        Sample data often has bottom=0 and height=top, so both agree.
         """
         left = float(metadata.get("left", 0.0))
         right = float(metadata.get("right", 0.0))
         bottom = float(metadata.get("bottom", 0.0))
-        height = float(metadata.get("height", metadata.get("top", 0.0)))
+        height_raw = float(metadata.get("height", metadata.get("top", 0.0)))
 
         if right - left < self._COLINEAR_TOL:
             right = left + 1.0
-        if height <= self._COLINEAR_TOL:
-            height = 1.0
 
-        return Region(
+        # height field semantics: top absolute vs delta
+        if height_raw <= self._COLINEAR_TOL:
+            y_max = bottom + 1.0
+            mode = "delta-fallback"
+        elif height_raw > bottom and height_raw > (right - left) * 0.05:
+            # likely absolute top (e.g. bottom=0, height=50160)
+            # If treating as delta would make y_max >> right span * 2, still OK for tall boxes.
+            # Prefer: if height_raw > bottom, y_max = height_raw when (height_raw - bottom)
+            # is a sensible box height.
+            y_max = height_raw
+            mode = "absolute-top"
+        else:
+            y_max = bottom + height_raw
+            mode = "delta"
+
+        if y_max - bottom < self._COLINEAR_TOL:
+            y_max = bottom + 1.0
+            mode = "delta-min"
+
+        reg = Region(
             x_min=left,
             x_max=right,
             y_min=bottom,
-            y_max=bottom + height,
+            y_max=y_max,
             source="metadata",
         )
+        log.debug(
+            "detect_from_metadata mode=%s height_raw=%s -> X[%.1f,%.1f] Y[%.1f,%.1f]",
+            mode,
+            height_raw,
+            reg.x_min,
+            reg.x_max,
+            reg.y_min,
+            reg.y_max,
+        )
+        return reg
 
     # -----------------------------------------------------------------
     @staticmethod

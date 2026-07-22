@@ -452,21 +452,36 @@ def find_particle_in_file(path: str, target_id: int) -> SingleParticleHit:
                         break
 
         hit.group = group
+        log.debug(
+            "find_particle path=%s id=%s found=%s file_ok=%s t=%.3fs",
+            os.path.basename(path),
+            target_id,
+            hit.found,
+            hit.file_ok,
+            time.perf_counter() - t0,
+        )
         return hit
     except FileNotFoundError as e:
         hit.file_ok = False
         hit.error = str(e)
+        log.warning("find_particle missing path=%s id=%s", os.path.basename(path), target_id)
         return hit
     except OSError as e:
         hit.file_ok = False
         hit.error = str(e)
-        log.warning("find_particle open fail path=%s id=%s", path, target_id)
+        log.warning("find_particle open fail path=%s id=%s: %s", path, target_id, e)
         return hit
     except Exception as e:
         hit.file_ok = False
         hit.error = str(e)
-        log.debug("find_particle path=%s id=%s found=%s file_ok=%s t=%.3fs", os.path.basename(path), target_id, hit.found, hit.file_ok, time.perf_counter()-t0)
-    return hit
+        log.exception(
+            "find_particle error path=%s id=%s t=%.3fs",
+            os.path.basename(path),
+            target_id,
+            time.perf_counter() - t0,
+        )
+        return hit
+
 
 
 def find_dat_files(directory: str) -> list[tuple[int, str]]:

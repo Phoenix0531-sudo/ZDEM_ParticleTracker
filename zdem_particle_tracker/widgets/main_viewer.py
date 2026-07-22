@@ -957,6 +957,14 @@ class MainViewer(QMainWindow):
             region = self._region_detector.detect_from_walls(np.asarray(walls), meta)
         if region is None or str(region.source).startswith("metadata-after") or region.source == "walls-empty":
             region = self._region_detector.detect_from_metadata(meta)
+        log.info(
+            "region detected source=%s X[%.1f,%.1f] Y[%.1f,%.1f]",
+            region.source,
+            region.x_min,
+            region.x_max,
+            region.y_min,
+            region.y_max,
+        )
         self._set_experiment_region(
             region.x_min,
             region.x_max,
@@ -1475,11 +1483,22 @@ class MainViewer(QMainWindow):
         self._set_controls_enabled(bool(self._frame_files))
 
     def _on_traj_done(self, traj):
-        self._trajectory = traj
         self._traj_progress.setVisible(False)
         self._btn_cancel_traj.setVisible(False)
         self._btn_track.setEnabled(True)
         self._current_worker = None
+        # Cancel path emits empty list — do not wipe UI with "0 frames completed"
+        if not traj:
+            log.info("traj_done empty (cancel or no data) selected=%s", self._selected_id)
+            if self._trajectory is None:
+                self._sb.showMessage("轨迹提取已取消或无数据")
+                self._sb_label.setText("已取消")
+            else:
+                self._sb.showMessage("操作已取消（保留上次轨迹）")
+                self._sb_label.setText("已取消")
+            self._set_controls_enabled(bool(self._frame_files))
+            return
+        self._trajectory = traj
         n_ok = sum(1 for p in (traj or []) if p.status in ("normal", "present"))
         n_er = sum(1 for p in (traj or []) if p.status == "eroded")
         n_fe = sum(1 for p in (traj or []) if p.status == "file_error")
