@@ -16,6 +16,10 @@ from __future__ import annotations
 
 import os
 import re
+
+from ..utils.logging_utils import get_logger
+
+log = get_logger("parsers.dat_scan")
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Sequence, Tuple
 
@@ -46,6 +50,7 @@ def scan_dat_files(directory: str) -> List[DatFileEntry]:
     """Non-recursive scan. Sort by (step, ini-first)."""
     out: List[DatFileEntry] = []
     if not os.path.isdir(directory):
+        log.warning("scan_dat_files: not a directory %s", directory)
         return out
     for e in os.scandir(directory):
         if not e.is_file():
@@ -60,6 +65,14 @@ def scan_dat_files(directory: str) -> List[DatFileEntry]:
         )
     # ini before non-ini at the same step (restart dump ordering)
     out.sort(key=lambda x: (x.step, 0 if x.is_ini else 1, x.name.lower()))
+    log.info(
+        "scan_dat_files dir=%s count=%d steps=%s..%s leading_ini_end=%s",
+        directory,
+        len(out),
+        out[0].step if out else None,
+        out[-1].step if out else None,
+        leading_ini_end_index(out) if out else -1,
+    )
     return out
 
 

@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import math
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional
 
 from PySide6.QtCore import QThread, Signal
 
 from ..parsers.dat_parser import find_particle_in_file
+from ..utils.logging_utils import get_logger
 from . import FileInfo, Trajectory, TrajectoryPoint
+
+log = get_logger("services.trajectory")
 
 
 def _compute_kinematics(
@@ -110,7 +114,15 @@ class _TrajectoryWorker(QThread):
 
     def run(self) -> None:
         total = len(self._files)
+        t0 = time.perf_counter()
+        log.info(
+            "trajectory start id=%s files=%d workers=%d",
+            self._particle_id,
+            total,
+            self._max_workers,
+        )
         if total == 0:
+            log.warning("trajectory empty file list id=%s", self._particle_id)
             self.finished.emit([])
             return
 
@@ -250,8 +262,21 @@ class _TrajectoryWorker(QThread):
                     )
                 self.progress.emit(idx + 1, total)
 
+            n_ok = sum(1 for p in trajectory if p.status in ("normal", "present"))
+            n_er = sum(1 for p in trajectory if p.status == "eroded")
+            n_fe = sum(1 for p in trajectory if p.status == "file_error")
+            log.info(
+                "trajectory done id=%s points=%d ok=%d eroded=%d file_error=%d t=%.2fs",
+                self._particle_id,
+                len(trajectory),
+                n_ok,
+                n_er,
+                n_fe,
+                time.perf_counter() - t0,
+            )
             self.finished.emit(trajectory)
         except Exception as exc:
+            log.exception("trajectory failed id=%s", self._particle_id)
             self.error.emit(str(exc))
 
 
@@ -275,6 +300,7 @@ class TrajectoryService:
 
     def cancel(self) -> None:
         if self._worker is not None and self._worker.isRunning():
+            log.info("trajectory cancel requested")
             self._worker.cancel()
             self._worker.wait(3000)
         self._worker = None

@@ -1,8 +1,8 @@
 """Main viewer — VisPy particles, trajectory, matplotlib series, Chinese UI."""
 from __future__ import annotations
 
-import logging
 import os
+import time
 from collections import Counter
 
 import numpy as np
@@ -71,6 +71,7 @@ from ..utils.frame_cache import LRUCache
 from ..workers.frame_load_worker import FrameLoadWorker
 from ..ui.group_legend_panel import GroupLegendPanel
 from ..ui.about_dialog import show_about_dialog, APP_VERSION
+from ..utils.logging_utils import get_logger
 from .selection_logic import (
     filter_trajectory_path_xy,
     id_allowed_at_session_start,
@@ -80,7 +81,7 @@ from .selection_logic import (
     validate_time_range_indices,
 )
 
-log = logging.getLogger("zdem_particle_tracker.main_viewer")
+log = get_logger("main_viewer")
 
 # VisPy GPU renderer (auto-detect — may fail in headless mode)
 HAVE_VISPY = False
@@ -548,6 +549,7 @@ class MainViewer(QMainWindow):
 
         entries = scan_dat_files(path)
         if not entries:
+            log.warning("load_directory: no DAT in %s", path)
             self._all_entries = []
             self._frame_entries = []
             self._frame_files = []
@@ -662,6 +664,7 @@ class MainViewer(QMainWindow):
         si = self._cmb_start.currentIndex()
         ei = self._cmb_end.currentIndex()
         stride = self._sp_stride.value()
+        log.info("apply_time_range si=%s ei=%s stride=%s n_all=%s", si, ei, stride, len(self._all_entries))
         err = validate_time_range_indices(si, ei, len(self._all_entries))
         if err:
             if "结束" in err:
@@ -773,10 +776,12 @@ class MainViewer(QMainWindow):
 
     def _load_frame(self, idx: int, force: bool = False, mode: ParseMode | None = None):
         if not self._frame_files or idx < 0 or idx >= len(self._frame_files):
+            log.debug("load_frame skip bad idx=%s", idx)
             return
         if not force and idx == self._current_idx and self._current_data is not None:
             return
         step, path = self._frame_files[idx]
+        log.debug("load_frame idx=%s step=%s force=%s mode=%s", idx, step, force, getattr(mode, "name", mode))
         self._current_idx = idx
         self._step_label.setText(f"{idx + 1}/{len(self._frame_files)}")
         self._slider.blockSignals(True)
@@ -799,6 +804,7 @@ class MainViewer(QMainWindow):
                 elif cached.count > 0 and len(set(map(str, gs))) == 1 and str(gs[0]) == "***":
                     need_full_reload = True
             if not need_full_reload:
+                log.debug("load_frame cache-hit idx=%s", idx)
                 self._apply_frame_data(idx, cached)
                 self._prefetch_neighbors(idx)
                 return
@@ -852,9 +858,11 @@ class MainViewer(QMainWindow):
 
     def _on_frame_loaded(self, request_id: int, data):
         if request_id != self._load_req_id:
+            log.debug("frame_loaded stale req=%s current=%s", request_id, self._load_req_id)
             return  # stale
         self._frame_load_busy = False
         idx = self._current_idx
+        log.debug("frame_loaded req=%s idx=%s balls=%s", request_id, idx, getattr(data, "count", "?"))
         if not self._frame_files or idx >= len(self._frame_files):
             return
         path = self._frame_files[idx][1]
@@ -870,6 +878,7 @@ class MainViewer(QMainWindow):
             return
         self._frame_load_busy = False
         self._play_waiting = False
+        log.error("frame_error req=%s msg=%s", request_id, msg)
         self._sb.showMessage(f"加载失败: {msg}")
         self._sb_label.setText("错误")
         if self._play_timer.isActive():
@@ -883,6 +892,7 @@ class MainViewer(QMainWindow):
         # Session start frame defines the selectable permanent-ID set
         if idx == 0 and data is not None and data.count > 0:
             self._start_frame_ids = set(int(i) for i in data.ids.tolist())
+            log.info("start_frame_ids set count=%d step=%s", len(self._start_frame_ids), getattr(data, "current_step", None))
         step_name = self._frame_files[idx][0] if self._frame_files else 0
         is_ini = False
         if 0 <= idx < len(self._frame_entries):
@@ -1286,6 +1296,7 @@ class MainViewer(QMainWindow):
             QMessageBox.information(self, "请稍候", "起始帧尚未就绪，请等待加载完成后再选择。")
             return
         if not self._id_in_start_frame(pid):
+            log.info("select rejected id=%s n_start=%s", pid, len(self._start_frame_ids or ()))
             QMessageBox.warning(
                 self,
                 "不可选择",
@@ -1300,6 +1311,7 @@ class MainViewer(QMainWindow):
         self._refresh_selected_info()
         self._render()
         self._set_controls_enabled(bool(self._frame_files))
+        log.info("selected particle id=%s auto_track=%s", pid, self._auto_track_on_select if auto_track is None else auto_track)
         self._sb.showMessage(f"已选中永久 ID {pid}")
         do_auto = self._auto_track_on_select if auto_track is None else bool(auto_track)
         # Auto-track on new selection (or re-select after clear)
@@ -1307,6 +1319,7 @@ class MainViewer(QMainWindow):
             self._start_trajectory(pid)
 
     def _clear_selection(self):
+        log.info("clear_selection previous_id=%s", self._selected_id)
         self._selected_id = None
         self._reset_trajectory_ui()
         for k in self._lbls:
@@ -1431,6 +1444,7 @@ class MainViewer(QMainWindow):
         self._btn_cancel_traj.setVisible(True)
         self._sb.showMessage(f"正在提取轨迹：0 / {len(finfos)}")
         self._sb_label.setText("提取轨迹…")
+        log.info("start_trajectory id=%s frames=%d", pid, len(finfos))
         worker = self._traj_service.start(pid, finfos, max_workers=4)
         self._current_worker = worker
         worker.progress.connect(self._on_traj_progress)
@@ -1452,6 +1466,7 @@ class MainViewer(QMainWindow):
         self._set_controls_enabled(bool(self._frame_files))
 
     def _on_traj_error(self, msg: str):
+        log.error("traj_error: %s", msg)
         self._traj_progress.setVisible(False)
         self._btn_cancel_traj.setVisible(False)
         self._btn_track.setEnabled(True)
@@ -1474,6 +1489,7 @@ class MainViewer(QMainWindow):
         if n_fe:
             msg += f"，文件错误 {n_fe}"
         msg += "）"
+        log.info("traj_done %s", msg)
         self._sb.showMessage(msg)
         self._sb_label.setText("轨迹完成")
         self._update_plots(traj)

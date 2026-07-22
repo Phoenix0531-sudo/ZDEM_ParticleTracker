@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Optional
@@ -10,6 +11,9 @@ from typing import Optional
 import numpy as np
 
 from ..models.particle_data import ParticleData
+from ..utils.logging_utils import get_logger
+
+log = get_logger("parsers.dat_parser")
 
 
 class ParseMode(Enum):
@@ -64,6 +68,8 @@ def parse_dat_file(
             pd.ball_num = 1
         return pd
 
+    t0 = time.perf_counter()
+    log.debug("parse_dat_file begin path=%s mode=%s", path, getattr(mode, "name", mode))
     pd = ParticleData()
     section = None
     in_particles = False
@@ -82,7 +88,8 @@ def parse_dat_file(
 
     try:
         fh = open(path, "r", encoding="utf-8", errors="replace")
-    except OSError:
+    except OSError as e:
+        log.warning("无法打开 DAT: %s (%s)", path, e)
         return pd
 
     with fh as f:
@@ -290,6 +297,25 @@ def parse_dat_file(
 
     if wdata:
         pd.wall_data = np.array(wdata, dtype=np.float64)
+    dt = time.perf_counter() - t0
+    n = int(pd.count) if hasattr(pd, "count") else len(pd.ids)
+    log.info(
+        "parse_dat_file done path=%s mode=%s step=%s balls=%s walls=%s groups=%s t=%.3fs",
+        os.path.basename(path),
+        getattr(mode, "name", mode),
+        pd.current_step,
+        n,
+        len(pd.wall_data) if getattr(pd, "wall_data", None) is not None else 0,
+        len(set(map(str, pd.groups))) if n else 0,
+        dt,
+    )
+    if pd.ball_num > 0 and n and n != int(pd.ball_num):
+        log.warning(
+            "ball_num mismatch path=%s declared=%s read=%s",
+            os.path.basename(path),
+            pd.ball_num,
+            n,
+        )
     return pd
 
 
@@ -302,6 +328,7 @@ def find_particle_in_file(path: str, target_id: int) -> SingleParticleHit:
     hit = SingleParticleHit(
         found=False, particle_id=int(target_id), source_path=path, file_ok=True
     )
+    t0 = time.perf_counter()
     try:
         section = None
         in_particles = False
@@ -433,11 +460,13 @@ def find_particle_in_file(path: str, target_id: int) -> SingleParticleHit:
     except OSError as e:
         hit.file_ok = False
         hit.error = str(e)
+        log.warning("find_particle open fail path=%s id=%s", path, target_id)
         return hit
     except Exception as e:
         hit.file_ok = False
         hit.error = str(e)
-        return hit
+        log.debug("find_particle path=%s id=%s found=%s file_ok=%s t=%.3fs", os.path.basename(path), target_id, hit.found, hit.file_ok, time.perf_counter()-t0)
+    return hit
 
 
 def find_dat_files(directory: str) -> list[tuple[int, str]]:
