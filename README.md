@@ -10,15 +10,21 @@
 
 Research desktop app for **ZDEM** frame sequences (`all_*.dat` / deposition `_ini` frames). Opinionated for salt-tectonics / granular DEM post-processing on Windows + Python — not a generic multi-physics GUI.
 
-## Screenshots / evidence
+## Screenshots (real GUI grab)
 
 <table>
   <tr>
     <td width="50%">
-      <img src="docs/screenshots/evidence.png" alt="Service-level evidence: discs, walls, kinematics">
-      <br><strong>Service evidence</strong> — true-radius discs, wall region, selection gate, v=Δx/Δstep
+      <img src="docs/screenshots/gui_hero.png" alt="MainViewer with 120 synthetic ZDEM particles">
+      <br><strong>MainViewer (Qt grab)</strong> — 120 particles, walls, Chinese UI, step 0 ready
     </td>
     <td width="50%">
+      <img src="docs/screenshots/evidence.png" alt="Service-level evidence">
+      <br><strong>Service evidence</strong> — selection gate + v=Δx/Δstep card
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2">
       <img src="docs/screenshots/preview.png" alt="Domain schematic">
       <br><strong>Domain schematic</strong> — parse → region → mesh render → trajectory
     </td>
@@ -26,11 +32,12 @@ Research desktop app for **ZDEM** frame sequences (`all_*.dat` / deposition `_in
 </table>
 
 ```bash
+# real window grab (Windows Qt; uses valid synthetic ZDEM DAT)
+uv run python scripts/capture_real_shots.py
 uv run python scripts/generate_evidence.py
-# example: picked permanent id under session gate; path_length from _compute_kinematics
 ```
 
-Evidence figure is **synthetic service-level** (honest): it exercises `RegionDetector`, `pick_particle_id`, and `_compute_kinematics` without claiming a full lab GUI screenshot of proprietary campaign data.
+GUI shots use a **valid synthetic ZDEM DAT** (Parameter/Wall/Ball Data) so the canvas is not empty. Proprietary lab campaigns are not committed.
 
 ## Why this exists
 

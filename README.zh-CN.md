@@ -10,26 +10,27 @@
 
 研究用桌面端，服务 **ZDEM** 帧序列（`all_*.dat` / 沉积 `_ini`）。为盐构造 / 颗粒 DEM 后处理定见设计，不是通用多物理 GUI。
 
-## 截图 / 证据
+## 截图（真实 GUI）
 
 <table>
   <tr>
     <td width="50%">
-      <img src="docs/screenshots/evidence.png" alt="服务层证据">
-      <br><strong>服务层证据</strong> — 真实半径圆盘、墙体区域、选中门控、v=Δx/Δstep
+      <img src="docs/screenshots/gui_hero.png" alt="主界面 120 颗粒">
+      <br><strong>MainViewer 真窗截图</strong> — 120 颗粒 + 中文界面
     </td>
     <td width="50%">
-      <img src="docs/screenshots/preview.png" alt="领域示意图">
-      <br><strong>领域示意图</strong> — 解析 → 区域 → mesh 渲染 → 轨迹
+      <img src="docs/screenshots/evidence.png" alt="服务层证据">
+      <br><strong>服务层证据</strong>
     </td>
   </tr>
 </table>
 
 ```bash
+uv run python scripts/capture_real_shots.py
 uv run python scripts/generate_evidence.py
 ```
 
-证据图为**可复现的合成服务级场景**（诚实）：跑 `RegionDetector` / `pick_particle_id` / `_compute_kinematics`，不冒充专有实验 GUI 截图。
+GUI 使用**合法合成 ZDEM DAT**（非空画布）。专有实验数据不入库。
 
 ## 为什么存在
 
