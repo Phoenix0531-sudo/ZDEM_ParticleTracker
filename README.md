@@ -73,8 +73,7 @@ uv run python -m zdem_particle_tracker
 - 点击或输入 ID 后 **自动提取轨迹**；「追踪」可手动重跑
 - **清除选择**（Esc）会同时清除轨迹、路径、曲线与数据表
 - 修改时间范围后会提示零点重置并清除旧轨迹
-
-选择/播放等纯逻辑在 `widgets/selection_logic.py`，便于无 GUI 单测。
+- 选择/播放纯逻辑：`widgets/selection_logic.py`（可无 GUI 单测）
 
 ## 快捷键
 
@@ -122,7 +121,12 @@ uv run python -m zdem_particle_tracker
 ## 测试
 
 ```bash
-uv run python -m unittest discover -s tests -v
+# 默认快速套件（约 87 用例）
+uv run python -m unittest discover -s tests -t .
+
+# 真实样本 + 窗口点选（约 1 分钟，需显示）
+set ZDEM_GUI_SAMPLE=1
+uv run python -m unittest tests.test_gui_smoke.TestGuiSmoke.test_load_sample_and_start_ids
 ```
 
 ## 已知限制
